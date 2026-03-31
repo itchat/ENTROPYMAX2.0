@@ -17,25 +17,27 @@ import json
 
 class MapBridge(QObject):
     """Bridge for communication between Python and JavaScript."""
-    
+
     # Signals for Python to JavaScript
     selectionChanged = Signal(list)  # Emitted when selection changes in Python
-    
-    # Signals for JavaScript to Python  
+
+    # Signals for JavaScript to Python
     markerClicked = Signal(str)  # Sample name when marker is clicked
     markersSelected = Signal(list)  # List of sample names selected
     boxSelectionComplete = Signal(list)  # List of sample names in box selection
     singleMarkerToggled = Signal(str, bool)  # Sample name and new state
-    
+    markerHovered = Signal(str)  # Sample name on hover enter
+    markerUnhovered = Signal()  # Hover leave
+
     def __init__(self):
         super().__init__()
         self.selected_samples = []
-        
+
     @pyqtSlot(str)
     def onMarkerClick(self, sample_name):
         """Handle marker click from JavaScript."""
         self.markerClicked.emit(sample_name)
-        
+
     @pyqtSlot(str)
     def onBoxSelection(self, samples_json):
         """Handle box selection from JavaScript."""
@@ -44,8 +46,8 @@ class MapBridge(QObject):
             self.boxSelectionComplete.emit(samples)
         except:
             pass
-            
-    @pyqtSlot(str)  
+
+    @pyqtSlot(str)
     def onMultiSelection(self, samples_json):
         """Handle multiple selection with Ctrl/Shift from JavaScript."""
         try:
@@ -53,7 +55,17 @@ class MapBridge(QObject):
             self.markersSelected.emit(samples)
         except:
             pass
-            
+
+    @pyqtSlot(str)
+    def onMarkerHover(self, sample_name):
+        """Handle marker hover enter from JavaScript."""
+        self.markerHovered.emit(sample_name)
+
+    @pyqtSlot()
+    def onMarkerUnhover(self):
+        """Handle marker hover leave from JavaScript."""
+        self.markerUnhovered.emit()
+
     def updateSelection(self, selected_samples):
         """Update selection from Python side."""
         self.selected_samples = selected_samples
@@ -65,11 +77,14 @@ class InteractiveMapWidget(QWidget):
     
     # Signal emitted when samples are selected/deselected
     selectionChanged = Signal(list)  # list of selected sample names
+    sampleHovered = Signal(str)  # emitted when mouse enters a marker
+    sampleUnhovered = Signal()  # emitted when mouse leaves a marker
     
     def __init__(self, parent=None):
         super().__init__(parent)
         self.selected_samples = []
         self.markers_data = []
+        self.group_colors = None
         self.last_toggled_sample = None
         self.bridge = MapBridge()
         self._setup_ui()
@@ -108,6 +123,8 @@ class InteractiveMapWidget(QWidget):
         self.bridge.markerClicked.connect(self._on_marker_clicked)
         self.bridge.boxSelectionComplete.connect(self._on_box_selection)
         self.bridge.markersSelected.connect(self._on_multi_selection)
+        self.bridge.markerHovered.connect(self.sampleHovered)
+        self.bridge.markerUnhovered.connect(self.sampleUnhovered)
         
     def _on_marker_clicked(self, sample_name):
         """Handle single marker click."""
@@ -139,54 +156,51 @@ class InteractiveMapWidget(QWidget):
         self.selected_samples = sample_names
         self.selectionChanged.emit(self.selected_samples)
         
-    def render_map(self, markers_data, center=None, zoom=None):
+    def render_map(self, markers_data, center=None, zoom=None, group_colors=None):
         """
         Render the interactive map with enhanced selection capabilities.
-        
+
         Args:
             markers_data: List of dictionaries with 'lat', 'lon', 'name', 'group' keys
             center: Optional tuple (lat, lon) to center the map
             zoom: Optional zoom level
+            group_colors: Optional dict {group_number: hex_color}. If None, uses brown-yellow gradient.
         """
         self.markers_data = markers_data
-        
+        if group_colors is not None:
+            self.group_colors = group_colors
+
         if center is None:
             if not markers_data:
                 center = (-25.0, 133.0)  # Australia center
             else:
                 center = (
-                    mean([m["lat"] for m in markers_data]), 
+                    mean([m["lat"] for m in markers_data]),
                     mean([m["lon"] for m in markers_data])
                 )
-        
+
         if zoom is None:
             zoom = 5
-        
+
         # Create map with satellite imagery
         m = folium.Map(
-            location=center, 
-            zoom_start=zoom, 
+            location=center,
+            zoom_start=zoom,
             zoom_control=False,
-            control_scale=True, 
+            control_scale=True,
             tiles='https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
             attr='Esri',
             width='100%',
             height='100%'
         )
-        
-        # Enhanced color palette for groups
-        group_colors = {
-            1: '#FF6B6B',  # Red
-            2: '#4ECDC4',  # Teal  
-            3: '#45B7D1',  # Blue
-            4: '#96CEB4',  # Green
-            5: '#FFEAA7',  # Yellow
-            6: '#DDA0DD',  # Plum
-            7: '#98D8C8',  # Mint
-            8: '#FFD93D',  # Gold
-            9: '#6C5CE7',  # Purple
-            10: '#FD79A8'  # Pink
-        }
+
+        # Use provided colors or fall back to default palette
+        if group_colors is None:
+            group_colors = {
+                1: '#FF6B6B', 2: '#4ECDC4', 3: '#45B7D1', 4: '#96CEB4',
+                5: '#FFEAA7', 6: '#DDA0DD', 7: '#98D8C8', 8: '#FFD93D',
+                9: '#6C5CE7', 10: '#FD79A8'
+            }
         
         # Add markers with group numbers
         for mk in markers_data:
@@ -284,6 +298,68 @@ class InteractiveMapWidget(QWidget):
                 }
             });
         }
+
+        // Cross-highlight hover events (debounced)
+        var hoverTimer = null;
+        var lastHoveredSample = null;
+
+        document.addEventListener('mouseover', function(e) {
+            var marker = e.target.closest('.custom-marker');
+            if (marker) {
+                var sampleName = marker.dataset.sampleName;
+                if (sampleName === lastHoveredSample) return;
+                lastHoveredSample = sampleName;
+                clearTimeout(hoverTimer);
+                hoverTimer = setTimeout(function() {
+                    if (mapBridge) {
+                        mapBridge.onMarkerHover(sampleName);
+                    }
+                    // Visual feedback on the marker
+                    marker.style.transform = 'scale(1.4)';
+                    marker.style.zIndex = '9999';
+                    marker.style.transition = 'transform 0.15s ease';
+                }, 50);
+            }
+        });
+
+        document.addEventListener('mouseout', function(e) {
+            var marker = e.target.closest('.custom-marker');
+            if (marker) {
+                lastHoveredSample = null;
+                clearTimeout(hoverTimer);
+                marker.style.transform = 'scale(1.0)';
+                marker.style.zIndex = '';
+                if (mapBridge) {
+                    mapBridge.onMarkerUnhover();
+                }
+            }
+        });
+
+        // Highlight a marker externally (called from Python via runJavaScript)
+        window.highlightMarker = function(sampleName) {
+            document.querySelectorAll('.custom-marker').forEach(function(marker) {
+                if (marker.dataset.sampleName === sampleName) {
+                    marker.style.transform = 'scale(1.4)';
+                    marker.style.zIndex = '9999';
+                    marker.style.boxShadow = '0 0 14px #FFD700';
+                    marker.style.transition = 'transform 0.15s ease, box-shadow 0.15s ease';
+                }
+            });
+        };
+
+        window.unhighlightAllMarkers = function() {
+            document.querySelectorAll('.custom-marker').forEach(function(marker) {
+                marker.style.transform = 'scale(1.0)';
+                marker.style.zIndex = '';
+                // Restore original box-shadow based on selection state
+                var sampleName = marker.dataset.sampleName;
+                if (mapBridge && mapBridge.selected_samples && mapBridge.selected_samples.includes(sampleName)) {
+                    marker.style.boxShadow = '0 0 10px #2ECC71';
+                } else {
+                    marker.style.boxShadow = '0 2px 6px rgba(0,0,0,0.3)';
+                }
+            });
+        };
         </script>
         """
         
@@ -485,7 +561,7 @@ class InteractiveMapWidget(QWidget):
         self.selected_samples = selected_names
         self.bridge.updateSelection(selected_names)
         # Re-render to update marker colors
-        self.render_map(self.markers_data)
+        self.render_map(self.markers_data, group_colors=self.group_colors)
         
     def set_selection(self, sample_names):
         """Set selection to specific samples."""
@@ -498,7 +574,7 @@ class InteractiveMapWidget(QWidget):
         self.selected_samples = []
         self.bridge.updateSelection([])
         self.selectionChanged.emit(self.selected_samples)
-        self.render_map(self.markers_data)
+        self.render_map(self.markers_data, group_colors=self.group_colors)
         
     def get_selected_samples(self):
         """Return list of selected sample names."""
@@ -514,7 +590,7 @@ class InteractiveMapWidget(QWidget):
             sample_name: Optional sample name to highlight
         """
         # Re-render map centered on the location with higher zoom
-        self.render_map(self.markers_data, center=(lat, lon), zoom=12)
+        self.render_map(self.markers_data, center=(lat, lon), zoom=12, group_colors=self.group_colors)
         
         # If sample name provided, highlight it temporarily
         if sample_name:
@@ -534,3 +610,13 @@ class InteractiveMapWidget(QWidget):
             }}, 500);
             """
             self.web_view.page().runJavaScript(js_code)
+
+    def highlight_marker(self, sample_name):
+        """Highlight a specific marker on the map (called from PSD hover)."""
+        js = f"if (window.highlightMarker) window.highlightMarker('{sample_name}');"
+        self.web_view.page().runJavaScript(js)
+
+    def unhighlight_all_markers(self):
+        """Reset all marker highlights."""
+        js = "if (window.unhighlightAllMarkers) window.unhighlightAllMarkers();"
+        self.web_view.page().runJavaScript(js)

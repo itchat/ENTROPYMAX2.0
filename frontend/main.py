@@ -58,6 +58,8 @@ class EntropyMaxFinal(QMainWindow):
         self.selected_samples = []
         self.current_analysis_data = {}
         self.selected_k_for_details = None  # User-selected K value for group details
+        self.group_relabel_mapping = {}  # {original_group: new_label}
+        self.group_colors = {}  # {label: hex_color} from brown-yellow gradient
         self.group_detail_popup = GroupDetailPopup()
         
         # Initialize settings dialog
@@ -292,8 +294,29 @@ class EntropyMaxFinal(QMainWindow):
         save_exit_action = session_menu.addAction('Save & Exit')
         save_exit_action.triggered.connect(self._on_save_and_exit)
 
+        # Tools menu
+        tools_menu = QMenu('Tools', self)
+        tools_menu.setStyleSheet("""
+            QMenu {
+                background-color: #ffffff;
+                border: 1px solid #d0d0d0;
+                border-radius: 4px;
+            }
+            QMenu::item {
+                padding: 8px 25px;
+                background: transparent;
+            }
+            QMenu::item:selected {
+                background-color: #e0f2f1;
+            }
+        """)
+        self.relabel_action = tools_menu.addAction('Relabel Groups...')
+        self.relabel_action.triggered.connect(self._on_relabel_groups)
+        self.relabel_action.setEnabled(False)
+
         # Add menus to the menubar in order
         menubar.addMenu(session_menu)
+        menubar.addMenu(tools_menu)
         menubar.addMenu(help_menu)
     
     def _show_format_examples(self):
@@ -397,6 +420,12 @@ class EntropyMaxFinal(QMainWindow):
         # Connect signal from group detail popup to sample list
         self.group_detail_popup.sampleLineClicked.connect(self._on_sample_line_clicked)
         
+        # Cross-highlight: map <-> PSD curves
+        self.map_sample_widget.sampleHovered.connect(self._on_map_sample_hovered)
+        self.map_sample_widget.sampleUnhovered.connect(self._on_map_sample_unhovered)
+        self.group_detail_popup.sampleHovered.connect(self._on_psd_sample_hovered)
+        self.group_detail_popup.sampleUnhovered.connect(self._on_psd_sample_unhovered)
+
         # Connect K value selection signals from charts - auto show group details
         self.rs_chart.kValueSelected.connect(self._on_k_value_selected_and_show_details)
         self.ch_chart.kValueSelected.connect(self._on_k_value_selected_and_show_details)
@@ -460,19 +489,25 @@ class EntropyMaxFinal(QMainWindow):
         # Save current selection
         current_selection = list(self.selected_samples) if hasattr(self, 'selected_samples') else []
         
-        # Convert to markers format
+        # Convert to markers format, applying relabel mapping if active
         markers = []
         for sample_id, info in gps_data.items():
+            group = info['group']
+            if self.group_relabel_mapping:
+                group = self.group_relabel_mapping.get(group, group)
             markers.append({
                 'name': sample_id,
                 'lat': info['lat'],
                 'lon': info['lon'],
-                'group': info['group'],
+                'group': group,
                 'selected': sample_id in current_selection
             })
-        
+
+        # Only pass custom colors if relabeling is active
+        colors = self.group_colors if self.group_colors else None
+
         # Load map with grouped data
-        self.map_sample_widget.load_data(markers)
+        self.map_sample_widget.load_data(markers, group_colors=colors)
         
         # Restore selection
         if current_selection:
@@ -530,10 +565,45 @@ class EntropyMaxFinal(QMainWindow):
         # Just highlight the sample normally in the sample list
         self.sample_list.highlight_sample(sample_name)
         self.statusBar().showMessage(f"Highlighted sample: {sample_name}")
-    
+
+    def _on_map_sample_hovered(self, sample_name):
+        """Map hover -> highlight in PSD curves."""
+        if getattr(self, '_hover_routing', False):
+            return
+        self._hover_routing = True
+        self.group_detail_popup.highlight_sample(sample_name)
+        self._hover_routing = False
+
+    def _on_map_sample_unhovered(self):
+        """Map hover leave -> clear PSD highlights."""
+        if getattr(self, '_hover_routing', False):
+            return
+        self._hover_routing = True
+        self.group_detail_popup.unhighlight_all()
+        self._hover_routing = False
+
+    def _on_psd_sample_hovered(self, sample_name):
+        """PSD hover -> highlight on map."""
+        if getattr(self, '_hover_routing', False):
+            return
+        self._hover_routing = True
+        self.map_sample_widget.map_widget.highlight_marker(sample_name)
+        self._hover_routing = False
+
+    def _on_psd_sample_unhovered(self):
+        """PSD hover leave -> clear map highlights."""
+        if getattr(self, '_hover_routing', False):
+            return
+        self._hover_routing = True
+        self.map_sample_widget.map_widget.unhighlight_all_markers()
+        self._hover_routing = False
+
     def _on_k_value_selected_and_show_details(self, k_value):
         """Handle K value selection from charts and automatically show group details."""
         self.selected_k_for_details = int(k_value)
+        # Reset relabel mapping when K changes
+        self.group_relabel_mapping = {}
+        self.group_colors = {}
         optimal_k = self.current_analysis_data.get('optimal_k', None)
         
         # Update status bar
@@ -709,6 +779,9 @@ class EntropyMaxFinal(QMainWindow):
             self.control_panel.export_btn.setEnabled(True)
             
             progress.close()
+            self.relabel_action.setEnabled(True)
+            self.group_relabel_mapping = {}
+            self.group_colors = {}
             self.statusBar().showMessage(f"Analysis complete. Optimal K={optimal_k}. Click 'Update Map View' to see results")
             
         except Exception as e:
@@ -753,10 +826,21 @@ class EntropyMaxFinal(QMainWindow):
             
             if not group_details:
                 raise Exception(f"No group data found for K={k_value}")
-            
+
+            # Apply relabel mapping if active
+            if self.group_relabel_mapping:
+                relabeled = {}
+                for gid, details in group_details.items():
+                    new_gid = self.group_relabel_mapping.get(gid, gid)
+                    relabeled[new_gid] = details
+                group_details = relabeled
+
+            # Only pass custom colors if relabeling is active
+            colors = self.group_colors if self.group_colors else None
+
             # Show group detail popups with extracted data
             self.group_detail_popup.load_and_show_popups_from_data(
-                group_details, k_value, x_unit='μm', y_unit='%'
+                group_details, k_value, x_unit='μm', y_unit='%', group_colors=colors
             )
             
             optimal_k = self.current_analysis_data.get('optimal_k', None)
@@ -768,6 +852,53 @@ class EntropyMaxFinal(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "Error Showing Group Details", str(e))
     
+    def _on_relabel_groups(self):
+        """Open the relabel groups dialog."""
+        if not hasattr(self, 'current_analysis_data') or not self.current_analysis_data:
+            QMessageBox.warning(self, "No Analysis Data",
+                              "Please run analysis first.")
+            return
+
+        from components.relabel_groups_dialog import RelabelGroupsDialog
+        from utils.data_pipeline import DataPipeline
+
+        k_values = self.current_analysis_data.get('k_values', [])
+        k_value = getattr(self, 'selected_k_for_details', None)
+        if k_value is None or k_value not in k_values:
+            if k_values:
+                k_value = int(max(k_values))
+            else:
+                QMessageBox.warning(self, "No K Value", "No K values available.")
+                return
+
+        parquet_path = self.current_analysis_data.get('parquet_path')
+        if not parquet_path:
+            QMessageBox.warning(self, "Error", "Parquet file not found.")
+            return
+
+        pipeline = DataPipeline()
+        group_details = pipeline.extract_group_details(parquet_path, int(k_value))
+        if not group_details:
+            QMessageBox.warning(self, "Error", f"No group data for K={k_value}.")
+            return
+
+        dialog = RelabelGroupsDialog(group_details, int(k_value), parent=self)
+        if dialog.exec():
+            self.group_relabel_mapping = dialog.get_mapping()
+            self.group_colors = dialog.get_colors()
+
+            # Refresh map and group details
+            try:
+                self._apply_map_for_k(int(k_value), announce=False)
+            except Exception:
+                pass
+            try:
+                self._on_show_group_details()
+            except Exception:
+                pass
+
+            self.statusBar().showMessage(f"Groups relabeled for K={k_value}")
+
     def _on_export_results(self):
         """Export analysis results CSV and cleanup temp files."""
         if not self.current_analysis_data:
@@ -877,7 +1008,8 @@ class EntropyMaxFinal(QMainWindow):
         group_options = ["All groups separate", "All groups"]
         if actual_groups:
             for gid in actual_groups:
-                group_options.append(f"Group {gid} only")
+                display_gid = self.group_relabel_mapping.get(gid, gid) if self.group_relabel_mapping else gid
+                group_options.append(f"Group {display_gid} only")
         else:
             for i in range(1, k_value + 1):
                 group_options.append(f"Group {i} only")
@@ -913,7 +1045,7 @@ class EntropyMaxFinal(QMainWindow):
                 if not file_path.endswith('.kml'):
                     file_path += '.kml'
                 try:
-                    create_kml(parquet_path, k_value, group_number, file_path.replace('.kml', ''))
+                    create_kml(parquet_path, k_value, group_number, file_path.replace('.kml', ''), relabel_mapping=self.group_relabel_mapping or None, group_colors=self.group_colors or None)
                 except Exception as e:
                     QMessageBox.critical(self, "KML Export Error", f"Failed to export KML for group {group_number};\n{str(e)}")
             self.statusBar().showMessage(f"KML exported: K = {k_value}, all groups separately")
@@ -945,8 +1077,8 @@ class EntropyMaxFinal(QMainWindow):
             
             # Use teammate's create_kml function with group_number parameter
             # Parameters: file_name (parquet), k_value, group_number (0 = all groups), output_file_name
-            create_kml(parquet_path, k_value, group_number, file_path.replace('.kml', ''))
-            
+            create_kml(parquet_path, k_value, group_number, file_path.replace('.kml', ''), relabel_mapping=self.group_relabel_mapping or None, group_colors=self.group_colors or None)
+
             QMessageBox.information(self, "Export Successful", 
                                 f"KML file exported successfully:\n{file_path}\n\nK-value: {k_value}\n{export_description}")
             

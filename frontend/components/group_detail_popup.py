@@ -4,7 +4,7 @@ Group detail popup component for displaying line charts for each group.
 
 import numpy as np
 import pyqtgraph as pg
-from PyQt6.QtWidgets import QWidget, QVBoxLayout, QMainWindow, QToolBar, QFileDialog, QApplication
+from PyQt6.QtWidgets import QWidget, QVBoxLayout, QMainWindow, QToolBar, QFileDialog, QApplication, QFrame
 from PyQt6.QtCore import Qt, pyqtSignal as Signal, QObject, QTimer
 from PyQt6.QtGui import QAction
 from .visualization_settings import VisualizationSettings
@@ -13,10 +13,12 @@ from .settings_dialog import SettingsDialog
 
 class GroupDetailPopup(QObject):
     """Manager class for creating and managing group detail popup windows."""
-    
+
     # Signal emitted when a sample line is clicked in any group detail window
     sampleLineClicked = Signal(str)  # sample_name
-    
+    sampleHovered = Signal(str)  # emitted when hovering a sample in any PSD window
+    sampleUnhovered = Signal()  # emitted when hover leaves
+
     def __init__(self):
         super().__init__()
         self.detail_windows = []
@@ -47,24 +49,32 @@ class GroupDetailPopup(QObject):
         
         return np.array(numeric_values)
     
-    def _create_popup_windows(self, grouped_samples, total_groups, x_unit='μm', y_unit='a.u.'):
+    def _create_popup_windows(self, grouped_samples, total_groups, x_unit='μm', y_unit='a.u.', group_colors=None):
         """
         Create popup windows for each group showing line charts.
-        
+
         Args:
             grouped_samples: Dictionary with group data
             total_groups: Total number of groups (K)
             x_unit: Unit label for x-axis
             y_unit: Unit label for y-axis
+            group_colors: Optional dict {group_number: hex_color}. If None, uses brown-yellow gradient.
         """
-        # Define colors for different groups (matching the main application style)
-        base_colors = ['#2196F3', '#4CAF50', '#FF9800', '#F44336', '#9C27B0',
-                      '#00BCD4', '#8BC34A', '#FFC107', '#E91E63', '#673AB7']
-        
+        if group_colors is None:
+            base_colors = ['#2196F3', '#4CAF50', '#FF9800', '#F44336', '#9C27B0',
+                          '#00BCD4', '#8BC34A', '#FFC107', '#E91E63', '#673AB7']
+            group_colors = None  # use base_colors fallback below
+
         for group_idx, (group_id, samples) in enumerate(sorted(grouped_samples.items())):
             if not samples:
                 continue
-            
+
+            # Use provided group_colors dict, or fall back to base_colors list
+            if group_colors is not None:
+                color = group_colors.get(group_id, '#888888')
+            else:
+                color = base_colors[group_idx % len(base_colors)]
+
             # Create window for this group
             window = GroupDetailWindow(
                 group_id=group_id,
@@ -72,7 +82,7 @@ class GroupDetailPopup(QObject):
                 samples=samples,
                 x_labels=self.x_labels,
                 x_values=self.x_values,
-                color=base_colors[group_idx % len(base_colors)],
+                color=color,
                 x_unit=x_unit,
                 y_unit=y_unit,
                 manager=self  # Pass manager reference for layout sync
@@ -80,16 +90,18 @@ class GroupDetailPopup(QObject):
             
             # Don't set geometry yet - will be done by tiling
             
-            # Connect the lineClicked signal from each window to our sampleLineClicked signal
+            # Connect signals from each window
             window.lineClicked.connect(self.sampleLineClicked)
-            
+            window.sampleHovered.connect(self.sampleHovered)
+            window.sampleUnhovered.connect(self.sampleUnhovered)
+
             window.show()
             self.detail_windows.append(window)
         
         # After all windows created, tile them automatically
         self._tile_windows_vertically()
     
-    def load_and_show_popups_from_data(self, group_details, k_value, x_unit='μm', y_unit='a.u.'):
+    def load_and_show_popups_from_data(self, group_details, k_value, x_unit='μm', y_unit='a.u.', group_colors=None):
         """
         Load and show popups from extracted group details data.
         
@@ -115,7 +127,7 @@ class GroupDetailPopup(QObject):
                 print(f"DEBUG Group {group_id}: first sample values length={len(details['samples'][0]['values'])}")
         
         # Create popup windows
-        self._create_popup_windows(grouped_samples, total_groups=int(k_value), x_unit=x_unit, y_unit=y_unit)
+        self._create_popup_windows(grouped_samples, total_groups=int(k_value), x_unit=x_unit, y_unit=y_unit, group_colors=group_colors)
     
     def _tile_windows_vertically(self):
         """Tile windows vertically (stacked) with shorter heights to fit on one screen."""
@@ -164,12 +176,24 @@ class GroupDetailPopup(QObject):
             window.close()
         self.detail_windows.clear()
 
+    def highlight_sample(self, sample_name):
+        """Highlight a sample across all group detail windows (from map hover)."""
+        for window in self.detail_windows:
+            window.highlight_sample_externally(sample_name)
+
+    def unhighlight_all(self):
+        """Clear all external highlights across all windows."""
+        for window in self.detail_windows:
+            window.unhighlight_externally()
+
 
 class GroupDetailWindow(QMainWindow):
     """Individual popup window showing line chart for a specific group."""
-    
+
     # Signal emitted when a line is clicked
     lineClicked = Signal(str)  # sample_name
+    sampleHovered = Signal(str)  # emitted on hover over a sample curve
+    sampleUnhovered = Signal()  # emitted when hover leaves
 
     def __init__(self, group_id, total_groups, samples, x_labels, x_values, color, x_unit='\u03bcm', y_unit='a.u.', manager=None):
         super().__init__()
@@ -218,8 +242,14 @@ class GroupDetailWindow(QMainWindow):
         self.setCentralWidget(central_widget)
         
         layout = QVBoxLayout(central_widget)
-        layout.setContentsMargins(10, 10, 10, 10)
-        
+        layout.setContentsMargins(10, 0, 10, 10)
+
+        # Colored header bar matching group color on map
+        header_bar = QFrame()
+        header_bar.setFixedHeight(6)
+        header_bar.setStyleSheet(f"background-color: {self.base_color}; border: none;")
+        layout.addWidget(header_bar)
+
         # Create plot widget directly without header
         self.plot_widget = pg.PlotWidget()
         self.plot_widget.setBackground('w')
@@ -830,8 +860,32 @@ class GroupDetailWindow(QMainWindow):
         self.coord_label.setText(f"{x_txt} {self.x_unit}, {y_txt} {self.y_unit} — {sample_name}")
         self.coord_label.setPos(x_plot, y_plot)
 
+    def _find_existing_marker(self, x_plot, y_plot, sample_name):
+        """Find an existing pinned marker at the same position for the same sample.
+        Returns index into self.pinned_markers, or -1 if not found."""
+        for i, marker in enumerate(self.pinned_markers):
+            if marker.get('sample_name') == sample_name:
+                if abs(marker['x_plot'] - x_plot) < 1e-4 and abs(marker['y_plot'] - y_plot) < 1e-4:
+                    return i
+        return -1
+
+    def _remove_pinned_marker(self, index):
+        """Remove a single pinned marker by index."""
+        marker = self.pinned_markers.pop(index)
+        try:
+            self.plot_widget.removeItem(marker['scatter'])
+            self.plot_widget.removeItem(marker['label'])
+        except Exception:
+            pass
+
     def _pin_point(self, x_plot, y_plot, x_disp, y_disp, sample_name: str):
-        """Create persistent marker+label at a point."""
+        """Toggle persistent marker+label at a point: add if absent, remove if present."""
+        # Check for existing marker at this position — toggle off if found
+        existing = self._find_existing_marker(x_plot, y_plot, sample_name)
+        if existing >= 0:
+            self._remove_pinned_marker(existing)
+            return False  # marker was removed
+
         scatter = pg.ScatterPlotItem(size=7, brush=pg.mkBrush(0, 150, 136, 200), pen=pg.mkPen(0, 121, 107), symbol='o')
         scatter.setData([x_plot], [y_plot])
         label = pg.TextItem(color=(0, 100, 90))
@@ -842,7 +896,11 @@ class GroupDetailWindow(QMainWindow):
         label.setPos(x_plot, y_plot)
         self.plot_widget.addItem(scatter)
         self.plot_widget.addItem(label)
-        self.pinned_markers.append({'scatter': scatter, 'label': label})
+        self.pinned_markers.append({
+            'scatter': scatter, 'label': label,
+            'sample_name': sample_name, 'x_plot': x_plot, 'y_plot': y_plot
+        })
+        return True  # marker was added
 
     def _clear_pinned_points(self):
         """Remove all pinned overlays."""
@@ -860,7 +918,46 @@ class GroupDetailWindow(QMainWindow):
         """Clear pinned points and hide hover overlays."""
         self._clear_pinned_points()
         self._clear_hover_overlays()
-    
+
+    def _emit_hover(self, sample_name):
+        """Emit hover signal, avoiding redundant emissions."""
+        if not hasattr(self, '_last_hover_sample'):
+            self._last_hover_sample = None
+        if sample_name == self._last_hover_sample:
+            return
+        self._last_hover_sample = sample_name
+        if sample_name:
+            self.sampleHovered.emit(sample_name)
+        else:
+            self.sampleUnhovered.emit()
+
+    def highlight_sample_externally(self, sample_name):
+        """Highlight a specific sample's curve/bar (called from map hover)."""
+        self._external_highlight = sample_name
+        for item_data in self.plot_items:
+            if item_data['sample_name'] == sample_name:
+                item_data['plot_item'].setPen(item_data['hover_pen'])
+                if 'bar_item' in item_data:
+                    item_data['bar_item'].setOpts(brush=item_data.get('hover_brush'))
+            else:
+                item_data['plot_item'].setPen(item_data['original_pen'])
+                if 'bar_item' in item_data:
+                    item_data['bar_item'].setOpts(
+                        brush=item_data.get('default_brush'),
+                        pen=item_data.get('default_bar_pen')
+                    )
+
+    def unhighlight_externally(self):
+        """Reset all curves to default pens (called when map hover leaves)."""
+        self._external_highlight = None
+        for item_data in self.plot_items:
+            item_data['plot_item'].setPen(item_data['original_pen'])
+            if 'bar_item' in item_data:
+                item_data['bar_item'].setOpts(
+                    brush=item_data.get('default_brush'),
+                    pen=item_data.get('default_bar_pen')
+                )
+
     def _on_plot_clicked(self, event):
         """Handle mouse clicks: left to pin a point, right to clear pins."""
         if event.button() == Qt.MouseButton.RightButton:
@@ -912,8 +1009,9 @@ class GroupDetailWindow(QMainWindow):
                             plot_item.setPen(original_pen)
                             item_data['bar_item'].setOpts(pen=original_bar_pen)
                         QTimer.singleShot(200, reset_color)
-                        self._pin_point(x_plot, y_plot, x_disp, y_disp, item_data['sample_name'])
-                        self.lineClicked.emit(item_data['sample_name'])
+                        pinned = self._pin_point(x_plot, y_plot, x_disp, y_disp, item_data['sample_name'])
+                        if pinned:
+                            self.lineClicked.emit(item_data['sample_name'])
                         return  # handled
         
         # Fallback: Find closest point across all curves
@@ -964,11 +1062,12 @@ class GroupDetailWindow(QMainWindow):
                     item_data['bar_item'].setOpts(pen=original_bar_pen)
             QTimer.singleShot(200, reset_color)
             
-            # Pin a marker+label at this point
-            self._pin_point(x_plot, y_plot, x_disp, y_disp, item_data['sample_name'])
-            
-            # Emit which sample was clicked
-            self.lineClicked.emit(item_data['sample_name'])
+            # Toggle marker at this point
+            pinned = self._pin_point(x_plot, y_plot, x_disp, y_disp, item_data['sample_name'])
+
+            # Emit which sample was clicked (only when pinning, not unpinning)
+            if pinned:
+                self.lineClicked.emit(item_data['sample_name'])
     
     def _on_mouse_hover(self, pos):
         """Hover: highlight nearest curve and show point coordinates."""
@@ -1036,8 +1135,9 @@ class GroupDetailWindow(QMainWindow):
                             x_disp = float(xs[idx])
                         y_disp = float(y_top)
                         self._update_hover_display(x_plot, y_plot, x_disp, y_disp, item_data['sample_name'])
+                        self._emit_hover(item_data['sample_name'])
                         return
-        
+
         if closest and min_distance < 0.06:
             item_data, idx = closest
             plot_item = item_data['plot_item']
@@ -1060,9 +1160,11 @@ class GroupDetailWindow(QMainWindow):
             
             # Update transient hover marker + text
             self._update_hover_display(x_plot, y_plot, x_disp, y_disp, item_data['sample_name'])
+            self._emit_hover(item_data['sample_name'])
         else:
             # Hide hover overlays when not near any curve
             if self.point_marker is not None:
                 self.point_marker.setData([], [])
             if self.coord_label is not None:
                 self.coord_label.setText("")
+            self._emit_hover(None)

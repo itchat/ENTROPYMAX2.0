@@ -13,6 +13,8 @@ class SimpleMapSampleWidget(QWidget):
     
     selectionChanged = Signal(list)
     sampleLocateRequested = Signal(str, float, float)
+    sampleHovered = Signal(str)
+    sampleUnhovered = Signal()
     
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -49,6 +51,8 @@ class SimpleMapSampleWidget(QWidget):
         self.map_widget.selectionChanged.connect(self._on_map_selection_changed)
         self.sample_list.selectionChanged.connect(self._on_list_selection_changed)
         self.sample_list.sampleLocateRequested.connect(self._on_sample_locate_requested)
+        self.map_widget.sampleHovered.connect(self.sampleHovered)
+        self.map_widget.sampleUnhovered.connect(self.sampleUnhovered)
         
     def _on_map_selection_changed(self, selected_samples):
         """Handle map selection change"""
@@ -87,10 +91,10 @@ class SimpleMapSampleWidget(QWidget):
         self.map_widget.zoom_to_location(lat, lon, sample_name=name)
         self.sampleLocateRequested.emit(name, lat, lon)
         
-    def load_data(self, markers_data):
+    def load_data(self, markers_data, group_colors=None):
         """Load data into both widgets"""
         self.markers_data = markers_data
-        self.map_widget.render_map(markers_data)
+        self.map_widget.render_map(markers_data, group_colors=group_colors)
         self.sample_list.load_samples(markers_data)
         
     def get_selected_samples_data(self):

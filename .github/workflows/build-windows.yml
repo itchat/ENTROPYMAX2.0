@@ -1,0 +1,55 @@
+name: Build Windows EXE
+
+on:
+  workflow_dispatch:          # Manual trigger from GitHub UI
+  push:
+    branches:
+      - 'user/dongkai'       # Auto-trigger on push to this branch
+    tags:
+      - 'v*'                 # Auto-trigger on version tags
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # ── 1. Build C backend ──
+      - name: Build run_entropymax.exe (C backend)
+        shell: cmd
+        run: |
+          cmake -S backend -B backend/build-msvc
+          cmake --build backend/build-msvc --config Release --target run_entropymax
+          copy backend\build-msvc\Release\run_entropymax.exe frontend\run_entropymax.exe
+
+      # ── 2. Set up Python ──
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      # ── 3. Install dependencies ──
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r frontend/requirements.txt
+          pip install pyinstaller
+
+      # ── 4. Package with PyInstaller ──
+      - name: Build EntropyMax2.exe
+        working-directory: frontend
+        run: pyinstaller --clean -y win.spec
+
+      # ── 5. Upload artifact ──
+      - name: Upload EXE
+        uses: actions/upload-artifact@v4
+        with:
+          name: EntropyMax2-Windows
+          path: frontend/dist/EntropyMax2.exe
+          if-no-files-found: error
+
+      # ── 6. Attach to GitHub Release (only on tag push) ──
+      - name: Upload to Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: frontend/dist/EntropyMax2.exe
