@@ -8,6 +8,9 @@ on:
     tags:
       - 'v*'                 # Auto-trigger on version tags
 
+permissions:
+  contents: write          # Required to create releases and upload assets
+
 jobs:
   build:
     runs-on: windows-latest
