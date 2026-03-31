@@ -425,6 +425,8 @@ class EntropyMaxFinal(QMainWindow):
         self.map_sample_widget.sampleUnhovered.connect(self._on_map_sample_unhovered)
         self.group_detail_popup.sampleHovered.connect(self._on_psd_sample_hovered)
         self.group_detail_popup.sampleUnhovered.connect(self._on_psd_sample_unhovered)
+        self.selected_psd_widget.sampleHovered.connect(self._on_psd_sample_hovered)
+        self.selected_psd_widget.sampleUnhovered.connect(self._on_psd_sample_unhovered)
 
         # Connect K value selection signals from charts - auto show group details
         self.rs_chart.kValueSelected.connect(self._on_k_value_selected_and_show_details)
@@ -567,11 +569,12 @@ class EntropyMaxFinal(QMainWindow):
         self.statusBar().showMessage(f"Highlighted sample: {sample_name}")
 
     def _on_map_sample_hovered(self, sample_name):
-        """Map hover -> highlight in PSD curves."""
+        """Map hover -> highlight in PSD curves (group detail + selected PSD)."""
         if getattr(self, '_hover_routing', False):
             return
         self._hover_routing = True
         self.group_detail_popup.highlight_sample(sample_name)
+        self.selected_psd_widget.highlight_sample_externally(sample_name)
         self._hover_routing = False
 
     def _on_map_sample_unhovered(self):
@@ -580,6 +583,7 @@ class EntropyMaxFinal(QMainWindow):
             return
         self._hover_routing = True
         self.group_detail_popup.unhighlight_all()
+        self.selected_psd_widget.unhighlight_externally()
         self._hover_routing = False
 
     def _on_psd_sample_hovered(self, sample_name):
@@ -899,6 +903,15 @@ class EntropyMaxFinal(QMainWindow):
 
             self.statusBar().showMessage(f"Groups relabeled for K={k_value}")
 
+    @staticmethod
+    def _default_kml_colors(k_value):
+        """Generate default colors for KML export when no relabel colors are set."""
+        palette = [
+            '#FF6B6B', '#4ECDC4', '#45B7D1', '#96CEB4', '#FFEAA7',
+            '#DDA0DD', '#98D8C8', '#FFD93D', '#6C5CE7', '#FD79A8',
+        ]
+        return {i + 1: palette[i % len(palette)] for i in range(int(k_value))}
+
     def _on_export_results(self):
         """Export analysis results CSV and cleanup temp files."""
         if not self.current_analysis_data:
@@ -1045,7 +1058,7 @@ class EntropyMaxFinal(QMainWindow):
                 if not file_path.endswith('.kml'):
                     file_path += '.kml'
                 try:
-                    create_kml(parquet_path, k_value, group_number, file_path.replace('.kml', ''), relabel_mapping=self.group_relabel_mapping or None, group_colors=self.group_colors or None)
+                    create_kml(parquet_path, k_value, group_number, file_path.replace('.kml', ''), relabel_mapping=self.group_relabel_mapping or None, group_colors=self.group_colors or self._default_kml_colors(k_value))
                 except Exception as e:
                     QMessageBox.critical(self, "KML Export Error", f"Failed to export KML for group {group_number};\n{str(e)}")
             self.statusBar().showMessage(f"KML exported: K = {k_value}, all groups separately")
@@ -1077,7 +1090,7 @@ class EntropyMaxFinal(QMainWindow):
             
             # Use teammate's create_kml function with group_number parameter
             # Parameters: file_name (parquet), k_value, group_number (0 = all groups), output_file_name
-            create_kml(parquet_path, k_value, group_number, file_path.replace('.kml', ''), relabel_mapping=self.group_relabel_mapping or None, group_colors=self.group_colors or None)
+            create_kml(parquet_path, k_value, group_number, file_path.replace('.kml', ''), relabel_mapping=self.group_relabel_mapping or None, group_colors=self.group_colors or self._default_kml_colors(k_value))
 
             QMessageBox.information(self, "Export Successful", 
                                 f"KML file exported successfully:\n{file_path}\n\nK-value: {k_value}\n{export_description}")

@@ -45,6 +45,9 @@ def create_kml(file_name, k_value, group_number, output_file_name, relabel_mappi
             KML.IconStyle(
                 KML.color(kml_color),
                 KML.scale('1.0'),
+                KML.Icon(
+                    KML.href('http://maps.google.com/mapfiles/kml/paddle/wht-blank.png')
+                ),
             ),
             id=style_id
         )

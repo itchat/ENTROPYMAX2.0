@@ -14,8 +14,8 @@ def brown_yellow_gradient(k: int) -> dict:
         Dictionary mapping group number (1-indexed) to hex color string.
         Group 1 = darkest brown (coarsest), Group k = lightest yellow (finest).
     """
-    # SaddleBrown (139, 69, 19) -> Gold (255, 215, 0)
-    start = (139, 69, 19)
+    # Very dark brown (62, 39, 14) -> Gold (255, 215, 0)
+    start = (62, 39, 14)
     end = (255, 215, 0)
 
     if k == 1:

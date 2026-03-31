@@ -98,7 +98,7 @@ class DistanceTool:
                 <a id="distance-measure-btn" 
                    class="leaflet-draw-draw-ruler" 
                    href="#" 
-                   title="Measure distance between two points">
+                   title="Measure distance between two sample points">
                 </a>
                 <a id="distance-clear-btn" 
                    class="leaflet-draw-draw-clear-measure" 

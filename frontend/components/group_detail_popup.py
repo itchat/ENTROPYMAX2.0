@@ -130,36 +130,53 @@ class GroupDetailPopup(QObject):
         self._create_popup_windows(grouped_samples, total_groups=int(k_value), x_unit=x_unit, y_unit=y_unit, group_colors=group_colors)
     
     def _tile_windows_vertically(self):
-        """Tile windows vertically (stacked) with shorter heights to fit on one screen."""
+        """Tile windows in 1 or 2 columns to fit on one screen."""
         if not self.detail_windows:
             return
-        
-        # Get screen geometry
+
         screen = QApplication.primaryScreen()
         avail = screen.availableGeometry()
         screen_width = avail.width()
         screen_height = avail.height()
         screen_x = avail.x()
         screen_y = avail.y()
-        
+
         n_windows = len(self.detail_windows)
-        
-        # Reserve margins
         top_margin = 40
         bottom_margin = 20
         side_margin = 20
         spacing = 8
-        
-        # Calculate window dimensions
-        window_width = screen_width - 2 * side_margin
-        available_height = screen_height - top_margin - bottom_margin - (n_windows - 1) * spacing
-        window_height = max(180, int(available_height / n_windows))  # Minimum 180px per window
-        
-        # Position each window
-        for i, window in enumerate(self.detail_windows):
-            x = screen_x + side_margin
-            y = screen_y + top_margin + i * (window_height + spacing)
-            window.setGeometry(x, y, window_width, window_height)
+        col_spacing = 12
+
+        # Check if single column would make windows too short
+        avail_h = screen_height - top_margin - bottom_margin
+        single_col_height = (avail_h - (n_windows - 1) * spacing) / n_windows
+
+        if single_col_height < 250 and n_windows > 1:
+            # 2-column layout
+            import math
+            n_left = math.ceil(n_windows / 2)
+            n_right = n_windows - n_left
+            window_width = (screen_width - 2 * side_margin - col_spacing) // 2
+
+            for col, (start, count) in enumerate([(0, n_left), (n_left, n_right)]):
+                if count == 0:
+                    continue
+                col_height = (avail_h - (count - 1) * spacing) // count
+                col_height = max(180, col_height)
+                x = screen_x + side_margin + col * (window_width + col_spacing)
+                for j in range(count):
+                    window = self.detail_windows[start + j]
+                    y = screen_y + top_margin + j * (col_height + spacing)
+                    window.setGeometry(x, y, window_width, col_height)
+        else:
+            # Single column
+            window_width = screen_width - 2 * side_margin
+            window_height = max(180, int(single_col_height))
+            for i, window in enumerate(self.detail_windows):
+                x = screen_x + side_margin
+                y = screen_y + top_margin + i * (window_height + spacing)
+                window.setGeometry(x, y, window_width, window_height)
     
     def apply_layout_to_all(self, source_settings):
         """Apply layout settings from one window to all windows.
@@ -883,7 +900,9 @@ class GroupDetailWindow(QMainWindow):
         # Check for existing marker at this position — toggle off if found
         existing = self._find_existing_marker(x_plot, y_plot, sample_name)
         if existing >= 0:
+            import time
             self._remove_pinned_marker(existing)
+            self._just_unpinned = time.time()
             return False  # marker was removed
 
         scatter = pg.ScatterPlotItem(size=7, brush=pg.mkBrush(0, 150, 136, 200), pen=pg.mkPen(0, 121, 107), symbol='o')
@@ -1071,6 +1090,13 @@ class GroupDetailWindow(QMainWindow):
     
     def _on_mouse_hover(self, pos):
         """Hover: highlight nearest curve and show point coordinates."""
+        import time
+        # Skip hover briefly after unpinning to avoid re-flash
+        if hasattr(self, '_just_unpinned') and time.time() - self._just_unpinned < 0.3:
+            self._clear_hover_overlays()
+            self._emit_hover(None)
+            return
+
         # Scene -> data coordinates
         mouse_point = self.plot_widget.plotItem.vb.mapSceneToView(pos)
         x_hover = mouse_point.x()

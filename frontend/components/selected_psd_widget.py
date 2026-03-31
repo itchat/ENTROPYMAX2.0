@@ -17,8 +17,26 @@ class SelectedPSDWidget(QWidget):
     hover highlight with tooltip, click to pin markers, clear markers.
     """
 
+    # Muted color palette for comfortable viewing (ColorBrewer-inspired)
+    PALETTE = [
+        (55, 126, 184),   # steel blue
+        (228, 26, 28),    # muted red
+        (77, 175, 74),    # sage green
+        (152, 78, 163),   # soft purple
+        (255, 127, 0),    # warm orange
+        (166, 86, 40),    # brown
+        (247, 129, 191),  # pink
+        (153, 153, 153),  # grey
+        (0, 139, 139),    # teal
+        (205, 133, 63),   # peru
+        (106, 90, 205),   # slate blue
+        (60, 179, 113),   # medium sea green
+    ]
+
     # Emitted when a sample line/bar is clicked
     lineClicked = Signal(str)  # sample_name
+    sampleHovered = Signal(str)  # emitted on hover over a sample curve
+    sampleUnhovered = Signal()  # emitted when hover leaves
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -172,11 +190,11 @@ class SelectedPSDWidget(QWidget):
 
                 base_w = self._compute_bar_widths(xs)
                 w = base_w * float(self.settings.bar_width_scale)
-                # per-sample color, semi-transparent
-                color = pg.intColor(i, hues=max(10, len(samples)), alpha=200)
-                brush_default = pg.mkBrush(color)
-                brush_hover = pg.mkBrush(pg.mkColor(color.red(), color.green(), color.blue(), 255))
-                pen_bar = pg.mkPen(color, width=1)
+                # per-sample color from muted palette
+                r, g, b = self.PALETTE[i % len(self.PALETTE)]
+                brush_default = pg.mkBrush(r, g, b, 160)
+                brush_hover = pg.mkBrush(r, g, b, 230)
+                pen_bar = pg.mkPen(r, g, b, width=1)
 
                 bar_item = pg.BarGraphItem(x=xs, height=ys, width=w, brush=brush_default, pen=pen_bar)
                 self.plot_widget.addItem(bar_item)
@@ -192,8 +210,8 @@ class SelectedPSDWidget(QWidget):
                     'bar_item': bar_item,
                     'sample_name': name,
                     'original_pen': line_pen,
-                    'hover_pen': pg.mkPen(color=(color.red(), color.green(), color.blue(), 255), width=hover_width),
-                    'click_pen': pg.mkPen(color=(255, 165, 0, 255), width=click_width),
+                    'hover_pen': pg.mkPen(color=(r, g, b, 255), width=hover_width),
+                    'click_pen': pg.mkPen(color=(180, 120, 40, 255), width=click_width),
                     'default_brush': brush_default,
                     'hover_brush': brush_hover,
                     'default_bar_pen': pen_bar,
@@ -218,8 +236,8 @@ class SelectedPSDWidget(QWidget):
                 if len(xs) == 0:
                     continue
 
-                color = pg.intColor(i, hues=max(10, len(samples)), alpha=255)
-                pen = pg.mkPen(color=color, width=self.settings.line_thickness)
+                r, g, b = self.PALETTE[i % len(self.PALETTE)]
+                pen = pg.mkPen(color=(r, g, b), width=self.settings.line_thickness)
                 plot_item = self.plot_widget.plot(xs, ys, pen=pen, name=name)
 
                 hover_width = self.settings.line_thickness + 1.5
@@ -228,8 +246,8 @@ class SelectedPSDWidget(QWidget):
                     'plot_item': plot_item,
                     'sample_name': name,
                     'original_pen': pen,
-                    'hover_pen': pg.mkPen(color=color, width=hover_width),
-                    'click_pen': pg.mkPen(color=(255, 165, 0, 255), width=click_width)
+                    'hover_pen': pg.mkPen(color=(r, g, b), width=hover_width),
+                    'click_pen': pg.mkPen(color=(180, 120, 40, 255), width=click_width)
                 })
 
         # Update x ticks
@@ -319,7 +337,7 @@ class SelectedPSDWidget(QWidget):
     # ===== Interaction & overlay helpers =====
     def _ensure_hover_items(self):
         if self.point_marker is None:
-            self.point_marker = pg.ScatterPlotItem(size=8, brush=pg.mkBrush(255, 0, 0, 180), pen=pg.mkPen(None))
+            self.point_marker = pg.ScatterPlotItem(size=8, brush=pg.mkBrush(180, 80, 60, 180), pen=pg.mkPen(None))
             self.plot_widget.addItem(self.point_marker)
         if self.coord_label is None:
             self.coord_label = pg.TextItem(color=(20, 20, 20))
@@ -332,10 +350,32 @@ class SelectedPSDWidget(QWidget):
         if self.coord_label is not None:
             self.coord_label.setText("")
 
+    def _find_existing_marker(self, x_plot, y_plot, sample_name):
+        for i, marker in enumerate(self.pinned_markers):
+            if marker.get('sample_name') == sample_name:
+                if abs(marker['x_plot'] - x_plot) < 1e-4 and abs(marker['y_plot'] - y_plot) < 1e-4:
+                    return i
+        return -1
+
+    def _remove_pinned_marker(self, index):
+        marker = self.pinned_markers.pop(index)
+        try:
+            self.plot_widget.removeItem(marker['scatter'])
+            self.plot_widget.removeItem(marker['label'])
+        except Exception:
+            pass
+
     def _pin_point(self, x_plot, y_plot, x_disp, y_disp, sample_name: str):
-        scatter = pg.ScatterPlotItem(size=7, brush=pg.mkBrush(0, 150, 136, 200), pen=pg.mkPen(0, 121, 107), symbol='o')
+        import time
+        existing = self._find_existing_marker(x_plot, y_plot, sample_name)
+        if existing >= 0:
+            self._remove_pinned_marker(existing)
+            self._just_unpinned = time.time()
+            return False
+
+        scatter = pg.ScatterPlotItem(size=7, brush=pg.mkBrush(70, 90, 110, 200), pen=pg.mkPen(50, 70, 90), symbol='o')
         scatter.setData([x_plot], [y_plot])
-        label = pg.TextItem(color=(0, 100, 90))
+        label = pg.TextItem(color=(50, 70, 90))
         label.setAnchor((0, 1))
         x_txt = self._format_number(x_disp)
         y_txt = self._format_number(y_disp)
@@ -343,7 +383,11 @@ class SelectedPSDWidget(QWidget):
         label.setPos(x_plot, y_plot)
         self.plot_widget.addItem(scatter)
         self.plot_widget.addItem(label)
-        self.pinned_markers.append({'scatter': scatter, 'label': label})
+        self.pinned_markers.append({
+            'scatter': scatter, 'label': label,
+            'sample_name': sample_name, 'x_plot': x_plot, 'y_plot': y_plot
+        })
+        return True
 
     def _clear_pinned_points(self):
         if not self.pinned_markers:
@@ -392,6 +436,43 @@ class SelectedPSDWidget(QWidget):
             widths[i] = 0.8 * gap if gap > 0 else 0.6
         return widths
 
+    # ===== Hover emit and external highlight =====
+    def _emit_hover(self, sample_name):
+        if not hasattr(self, '_last_hover_sample'):
+            self._last_hover_sample = None
+        if sample_name == self._last_hover_sample:
+            return
+        self._last_hover_sample = sample_name
+        if sample_name:
+            self.sampleHovered.emit(sample_name)
+        else:
+            self.sampleUnhovered.emit()
+
+    def highlight_sample_externally(self, sample_name):
+        self._external_highlight = sample_name
+        for item_data in self.plot_items:
+            if item_data['sample_name'] == sample_name:
+                item_data['plot_item'].setPen(item_data['hover_pen'])
+                if 'bar_item' in item_data:
+                    item_data['bar_item'].setOpts(brush=item_data.get('hover_brush'))
+            else:
+                item_data['plot_item'].setPen(item_data['original_pen'])
+                if 'bar_item' in item_data:
+                    item_data['bar_item'].setOpts(
+                        brush=item_data.get('default_brush'),
+                        pen=item_data.get('default_bar_pen')
+                    )
+
+    def unhighlight_externally(self):
+        self._external_highlight = None
+        for item_data in self.plot_items:
+            item_data['plot_item'].setPen(item_data['original_pen'])
+            if 'bar_item' in item_data:
+                item_data['bar_item'].setOpts(
+                    brush=item_data.get('default_brush'),
+                    pen=item_data.get('default_bar_pen')
+                )
+
     # ===== Hover and click handling =====
     def _on_plot_clicked(self, event):
         if event.button() == Qt.MouseButton.RightButton:
@@ -432,17 +513,17 @@ class SelectedPSDWidget(QWidget):
                         original_pen = item_data['original_pen']
                         plot_item.setPen(click_pen)
                         original_bar_pen = item_data.get('default_bar_pen')
-                        item_data['bar_item'].setOpts(pen=pg.mkPen(255, 165, 0, 255))
+                        item_data['bar_item'].setOpts(pen=pg.mkPen(180, 120, 40, 255))
                         def reset_color():
                             plot_item.setPen(original_pen)
                             item_data['bar_item'].setOpts(pen=original_bar_pen)
                         QTimer.singleShot(200, reset_color)
-                        self._pin_point(x_plot, y_plot, x_disp, y_disp, item_data['sample_name'])
-                        # Emit clicked sample name for focusing in list
-                        try:
-                            self.lineClicked.emit(item_data['sample_name'])
-                        except Exception:
-                            pass
+                        pinned = self._pin_point(x_plot, y_plot, x_disp, y_disp, item_data['sample_name'])
+                        if pinned:
+                            try:
+                                self.lineClicked.emit(item_data['sample_name'])
+                            except Exception:
+                                pass
                         return
 
         # Fallback: nearest curve point
@@ -476,13 +557,21 @@ class SelectedPSDWidget(QWidget):
             def reset_color():
                 plot_item.setPen(original_pen)
             QTimer.singleShot(200, reset_color)
-            self._pin_point(x_plot, y_plot, x_disp, y_disp, item_data['sample_name'])
-            try:
-                self.lineClicked.emit(item_data['sample_name'])
-            except Exception:
-                pass
+            pinned = self._pin_point(x_plot, y_plot, x_disp, y_disp, item_data['sample_name'])
+            if pinned:
+                try:
+                    self.lineClicked.emit(item_data['sample_name'])
+                except Exception:
+                    pass
 
     def _on_mouse_hover(self, pos):
+        import time
+        # Skip hover briefly after unpinning to avoid re-flash
+        if hasattr(self, '_just_unpinned') and time.time() - self._just_unpinned < 0.3:
+            self._clear_hover_overlays()
+            self._emit_hover(None)
+            return
+
         mouse_point = self.plot_widget.plotItem.vb.mapSceneToView(pos)
         x_hover = mouse_point.x()
         y_hover = mouse_point.y()
@@ -526,6 +615,7 @@ class SelectedPSDWidget(QWidget):
                         x_disp = 10 ** x_plot if self._is_log_scale else float(xs[idx])
                         y_disp = float(y_top)
                         self._update_hover_display(x_plot, y_plot, x_disp, y_disp, item_data['sample_name'])
+                        self._emit_hover(item_data['sample_name'])
                         return
 
         # Otherwise compute nearest point
@@ -549,8 +639,10 @@ class SelectedPSDWidget(QWidget):
             x_disp = 10 ** x_plot if self._is_log_scale else float(x_plot)
             y_disp = float(y_plot)
             self._update_hover_display(x_plot, y_plot, x_disp, y_disp, item_data['sample_name'])
+            self._emit_hover(item_data['sample_name'])
         else:
             self._clear_hover_overlays()
+            self._emit_hover(None)
         
     def _update_hover_display(self, x_plot, y_plot, x_disp, y_disp, sample_name: str):
         self._ensure_hover_items()
