@@ -104,7 +104,7 @@ class SelectedPSDWidget(QWidget):
         axis_style = self.settings.get_axis_style()
         tick_style = self.settings.get_tick_style()
         self.plot_widget.setLabel('left', 'Frequency', units='%', **axis_style)
-        self.plot_widget.setLabel('bottom', 'Grain Size', units='μm', **axis_style)
+        self.plot_widget.setLabel('bottom', 'Grain Size', units='μm', unitPrefix='', **axis_style)
         left_axis = self.plot_widget.getAxis('left')
         bottom_axis = self.plot_widget.getAxis('bottom')
         tick_pen = pg.mkPen(color=tick_style['color'])
@@ -276,13 +276,14 @@ class SelectedPSDWidget(QWidget):
 
     def set_log_scale(self, enabled: bool):
         self._is_log_scale = bool(enabled)
-        # Update action label
         if hasattr(self, 'scale_action'):
-            if self._is_log_scale:
-                self.scale_action.setText("Switch to Linear")
-            else:
-                self.scale_action.setText("Switch to Log")
+            self.scale_action.setText("Switch to Linear" if self._is_log_scale else "Switch to Log")
         self._replot_last()
+        # Linear axis must start at 0
+        if not self._is_log_scale and self._last_x_labels:
+            x_vals = self._parse_grain_sizes(self._last_x_labels)
+            if len(x_vals) > 0:
+                self.plot_widget.setXRange(0, float(np.max(x_vals)) * 1.05, padding=0)
 
     def set_chart_type_bar(self, enabled: bool):
         self._show_as_bar = bool(enabled)
@@ -298,13 +299,12 @@ class SelectedPSDWidget(QWidget):
 
     def _update_log_ticks(self, x_numeric):
         ax = self.plot_widget.getAxis('bottom')
-        ticks = []
+        major, minor = [], []
         finite = x_numeric[np.isfinite(x_numeric) & (x_numeric > 0)]
         if finite.size == 0:
             ax.setTicks([[]])
             return
-        mn = float(np.min(finite))
-        mx = float(np.max(finite))
+        mn, mx = float(np.min(finite)), float(np.max(finite))
         import math
         log_min = math.floor(np.log10(mn))
         log_max = math.ceil(np.log10(mx))
@@ -313,8 +313,12 @@ class SelectedPSDWidget(QWidget):
             if mn <= val <= mx:
                 pos = np.log10(val)
                 label = f"{val:.0f}" if val >= 1 else f"{val:.2f}"
-                ticks.append((pos, label))
-        ax.setTicks([ticks])
+                major.append((pos, label))
+            for mult in range(2, 10):
+                mval = mult * (10 ** exp)
+                if mn <= mval <= mx:
+                    minor.append((np.log10(mval), ''))
+        ax.setTicks([major, minor])
 
     def _update_linear_ticks(self, x_numeric):
         ax = self.plot_widget.getAxis('bottom')
@@ -322,17 +326,24 @@ class SelectedPSDWidget(QWidget):
         if finite.size == 0:
             ax.setTicks([[]])
             return
-        vmin = float(np.min(finite))
-        vmax = float(np.max(finite))
+        vmin, vmax = float(np.min(finite)), float(np.max(finite))
         if vmax <= vmin:
             ax.setTicks([[]])
             return
-        # Simple nice ticks
         span = vmax - vmin
         step = 10 ** int(np.floor(np.log10(span / 7)))
         vals = np.arange(np.floor(vmin / step) * step, np.ceil(vmax / step) * step + 0.5 * step, step)
-        ticks = [(float(v), f"{v:.0f}" if v >= 1 else f"{v:.2f}") for v in vals if vmin <= v <= vmax]
-        ax.setTicks([ticks])
+        major = [(float(v), f"{v:.0f}" if v >= 1 else f"{v:.2f}") for v in vals if vmin <= v <= vmax]
+        # Minor ticks: subdivide major intervals into 5
+        minor = []
+        if len(major) >= 2:
+            mstep = (major[1][0] - major[0][0]) / 5
+            x = major[0][0] - (major[1][0] - major[0][0])
+            while x <= major[-1][0] + (major[1][0] - major[0][0]):
+                if vmin <= x <= vmax and not any(abs(x - m[0]) < mstep * 0.1 for m in major):
+                    minor.append((x, ''))
+                x += mstep
+        ax.setTicks([major, minor])
 
     # ===== Interaction & overlay helpers =====
     def _ensure_hover_items(self):

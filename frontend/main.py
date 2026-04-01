@@ -60,7 +60,7 @@ class EntropyMaxFinal(QMainWindow):
         self.selected_k_for_details = None  # User-selected K value for group details
         self.group_relabel_mapping = {}  # {original_group: new_label}
         self.group_colors = {}  # {label: hex_color} from brown-yellow gradient
-        self.group_detail_popup = GroupDetailPopup()
+        self.group_detail_popup = GroupDetailPopup(main_window=self)
         
         # Initialize settings dialog
         self.settings_dialog = SettingsDialog(self)
@@ -314,11 +314,41 @@ class EntropyMaxFinal(QMainWindow):
         self.relabel_action.triggered.connect(self._on_relabel_groups)
         self.relabel_action.setEnabled(False)
 
+        # View menu
+        view_menu = QMenu('View', self)
+        view_menu.setStyleSheet("""
+            QMenu {
+                background-color: #ffffff;
+                border: 1px solid #d0d0d0;
+                border-radius: 4px;
+            }
+            QMenu::item {
+                padding: 8px 25px;
+                background: transparent;
+            }
+            QMenu::item:selected {
+                background-color: #e0f2f1;
+            }
+        """)
+        self.always_on_top_action = view_menu.addAction('Always on Top')
+        self.always_on_top_action.setCheckable(True)
+        self.always_on_top_action.setChecked(False)
+        self.always_on_top_action.triggered.connect(self._toggle_always_on_top)
+
         # Add menus to the menubar in order
         menubar.addMenu(session_menu)
+        menubar.addMenu(view_menu)
         menubar.addMenu(tools_menu)
         menubar.addMenu(help_menu)
-    
+
+    def _toggle_always_on_top(self, checked):
+        """Toggle always-on-top for the main control window."""
+        if checked:
+            self.setWindowFlags(self.windowFlags() | Qt.WindowType.WindowStaysOnTopHint)
+        else:
+            self.setWindowFlags(self.windowFlags() & ~Qt.WindowType.WindowStaysOnTopHint)
+        self.show()
+
     def _show_format_examples(self):
         """Show dialog with format examples for CSV files."""
         dialog = FormatExamplesDialog(self)
@@ -1249,6 +1279,11 @@ class EntropyMaxFinal(QMainWindow):
             return set(), set()
 
 if __name__ == '__main__':
+    # Fix fractional DPI scaling on Windows (125%, 150%) — must be before QApplication
+    os.environ.setdefault('QT_ENABLE_HIGHDPI_SCALING', '1')
+    QApplication.setHighDpiScaleFactorRoundingPolicy(
+        Qt.HighDpiScaleFactorRoundingPolicy.PassThrough
+    )
     app = QApplication(sys.argv)
     basedir = os.path.dirname(__file__)
     app.setWindowIcon(QtGui.QIcon(os.path.join(basedir, 'emaxlight.ico')))

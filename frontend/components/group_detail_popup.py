@@ -19,11 +19,12 @@ class GroupDetailPopup(QObject):
     sampleHovered = Signal(str)  # emitted when hovering a sample in any PSD window
     sampleUnhovered = Signal()  # emitted when hover leaves
 
-    def __init__(self):
+    def __init__(self, main_window=None):
         super().__init__()
         self.detail_windows = []
         self.data_path = None
         self.group_data = {}
+        self.main_window = main_window
         
     
     def _parse_grain_sizes(self, labels):
@@ -130,59 +131,67 @@ class GroupDetailPopup(QObject):
         self._create_popup_windows(grouped_samples, total_groups=int(k_value), x_unit=x_unit, y_unit=y_unit, group_colors=group_colors)
     
     def _tile_windows_vertically(self):
-        """Tile windows in 1 or 2 columns to fit on one screen."""
+        """Tile windows in 2+2 overlapping column layout (up to 20 groups).
+
+        Layout:
+          Col 1: groups 1-5  (left)    Col 2: groups 6-10  (right)
+          Col 3: groups 11-15 (overlay col 1, offset +30x +25y)
+          Col 4: groups 16-20 (overlay col 2, offset +30x +25y)
+        """
         if not self.detail_windows:
             return
 
-        screen = QApplication.primaryScreen()
+        # Use the screen where the main window is, not just primary
+        screen = None
+        if self.main_window is not None:
+            screen = self.main_window.screen()
+        if screen is None:
+            screen = QApplication.primaryScreen()
+
         avail = screen.availableGeometry()
-        screen_width = avail.width()
-        screen_height = avail.height()
-        screen_x = avail.x()
-        screen_y = avail.y()
+        sx, sy = avail.x(), avail.y()
+        sw, sh = avail.width(), avail.height()
 
-        n_windows = len(self.detail_windows)
-        top_margin = 40
-        bottom_margin = 20
-        side_margin = 20
-        spacing = 8
-        col_spacing = 12
+        top_margin, bottom_margin, side_margin = 40, 20, 20
+        spacing, col_spacing = 6, 10
+        overlay_dx, overlay_dy = 30, 25
 
-        # Check if single column would make windows too short
-        avail_h = screen_height - top_margin - bottom_margin
-        single_col_height = (avail_h - (n_windows - 1) * spacing) / n_windows
+        avail_h = sh - top_margin - bottom_margin
+        base_col_w = (sw - 2 * side_margin - col_spacing) // 2
 
-        if single_col_height < 250 and n_windows > 1:
-            # 2-column layout
-            import math
-            n_left = math.ceil(n_windows / 2)
-            n_right = n_windows - n_left
-            window_width = (screen_width - 2 * side_margin - col_spacing) // 2
+        # Split windows into columns of up to 5
+        columns = []
+        for i in range(0, len(self.detail_windows), 5):
+            columns.append(self.detail_windows[i:i + 5])
 
-            for col, (start, count) in enumerate([(0, n_left), (n_left, n_right)]):
-                if count == 0:
-                    continue
-                col_height = (avail_h - (count - 1) * spacing) // count
-                col_height = max(180, col_height)
-                x = screen_x + side_margin + col * (window_width + col_spacing)
-                for j in range(count):
-                    window = self.detail_windows[start + j]
-                    y = screen_y + top_margin + j * (col_height + spacing)
-                    window.setGeometry(x, y, window_width, col_height)
-        else:
-            # Single column
-            window_width = screen_width - 2 * side_margin
-            window_height = max(180, int(single_col_height))
-            for i, window in enumerate(self.detail_windows):
-                x = screen_x + side_margin
-                y = screen_y + top_margin + i * (window_height + spacing)
-                window.setGeometry(x, y, window_width, window_height)
+        for ci, col_wins in enumerate(columns):
+            count = len(col_wins)
+            is_right = (ci % 2) == 1
+            is_overlay = ci >= 2
+
+            base_x = sx + side_margin + (base_col_w + col_spacing if is_right else 0)
+
+            if is_overlay:
+                x = base_x + overlay_dx
+                y_start = sy + top_margin + overlay_dy
+                col_w = base_col_w - overlay_dx
+                col_h = avail_h - overlay_dy
+            else:
+                x = base_x
+                y_start = sy + top_margin
+                col_w = base_col_w
+                col_h = avail_h
+
+            win_h = max(150, (col_h - (count - 1) * spacing) // count)
+
+            for j, window in enumerate(col_wins):
+                y = y_start + j * (win_h + spacing)
+                window.setGeometry(int(x), int(y), int(col_w), int(win_h))
     
     def apply_layout_to_all(self, source_settings):
         """Apply layout settings from one window to all windows.
-        
-        Args:
-            source_settings: dict with keys 'is_log_scale', 'show_as_bar', 'y_range'
+
+        Syncs chart type, scale, average-only, view range, and window size.
         """
         for window in self.detail_windows:
             window.apply_layout_settings(source_settings)
@@ -227,6 +236,7 @@ class GroupDetailWindow(QMainWindow):
         self.plot_items = []  # plot items and meta per sample
         self.is_log_scale = True  # default to logarithmic x
         self.show_as_bar = True  # default to bar chart per request
+        self.show_average_only = False  # show only average curve
         self.original_x_values = None  # original grain sizes
 
         # Hover/pin overlays
@@ -291,7 +301,7 @@ class GroupDetailWindow(QMainWindow):
         
         # Apply axis labels with settings
         self.plot_widget.setLabel('left', 'Frequency', units=self.y_unit, **axis_style)
-        self.plot_widget.setLabel('bottom', 'Grain Size', units=self.x_unit, **axis_style)
+        self.plot_widget.setLabel('bottom', 'Grain Size', units=self.x_unit, unitPrefix='', **axis_style)
         
         # Apply tick font styling
         left_axis = self.plot_widget.getAxis('left')
@@ -344,10 +354,18 @@ class GroupDetailWindow(QMainWindow):
         self.clear_points_action.setToolTip("Remove all pinned markers and hide hover label")
         self.clear_points_action.triggered.connect(self._clear_all_points)
         toolbar.addAction(self.clear_points_action)
-        
+
+        # Show Average Only toggle
+        self.avg_action = QAction("Show Average Only", self)
+        self.avg_action.setCheckable(True)
+        self.avg_action.setChecked(False)
+        self.avg_action.setToolTip("Show only the group average curve")
+        self.avg_action.triggered.connect(self._toggle_average_only)
+        toolbar.addAction(self.avg_action)
+
         # Separator
         toolbar.addSeparator()
-        
+
         # Apply Layout to All action
         apply_layout_action = QAction("Apply Layout to All", self)
         apply_layout_action.setToolTip("Apply current scale, chart type, and view range to all group windows")
@@ -398,21 +416,31 @@ class GroupDetailWindow(QMainWindow):
         self.settings_dialog.raise_()
         self.settings_dialog.activateWindow()
     
+    def _toggle_average_only(self, checked):
+        """Toggle showing only the group average curve."""
+        self.show_average_only = checked
+        self._plot_data()
+        self.plot_widget.autoRange()
+        if not self.is_log_scale and self.original_x_values is not None:
+            x_max = float(np.max(self.original_x_values))
+            self.plot_widget.setXRange(0, x_max * 1.05, padding=0)
+
     def _toggle_scale(self):
         """Toggle between logarithmic and linear scale for X-axis."""
         self.is_log_scale = not self.is_log_scale
-        
-        # Update action text
+
         if self.is_log_scale:
             self.scale_action.setText("Switch to Linear")
         else:
             self.scale_action.setText("Switch to Log")
-        
-        # Replot data with new scale
+
         self._plot_data()
-        
-        # Auto-range the view to fit the data
         self.plot_widget.autoRange()
+
+        # Linear axis must start at 0
+        if not self.is_log_scale and self.original_x_values is not None:
+            x_max = float(np.max(self.original_x_values))
+            self.plot_widget.setXRange(0, x_max * 1.05, padding=0)
     
     def _toggle_chart_type(self):
         """Toggle between bar and line chart types."""
@@ -436,10 +464,12 @@ class GroupDetailWindow(QMainWindow):
         # Reset this window's toggles
         self.is_log_scale = True
         self.show_as_bar = True
+        self.show_average_only = False
         # Update toolbar texts
         try:
             self.scale_action.setText("Switch to Linear")
             self.chart_type_action.setText("Switch to Line")
+            self.avg_action.setChecked(False)
         except Exception:
             pass
         # Replot and reset view
@@ -485,29 +515,40 @@ class GroupDetailWindow(QMainWindow):
     def get_layout_settings(self):
         """Get current layout settings as a dictionary."""
         view_range = self.plot_widget.viewRange()
+        geom = self.geometry()
         return {
             'is_log_scale': self.is_log_scale,
             'show_as_bar': self.show_as_bar,
+            'show_average_only': self.show_average_only,
             'x_range': view_range[0],
-            'y_range': view_range[1]
+            'y_range': view_range[1],
+            'window_width': geom.width(),
+            'window_height': geom.height(),
         }
-    
+
     def apply_layout_settings(self, settings):
-        """Apply layout settings from another window.
-        
-        Args:
-            settings: dict with 'is_log_scale', 'show_as_bar', 'x_range', 'y_range'
-        """
-        # Apply scale and chart type
+        """Apply layout settings from another window."""
+        # Apply scale
         if settings.get('is_log_scale') != self.is_log_scale:
             self._toggle_scale()
-        
+
+        # Apply chart type
         if settings.get('show_as_bar') != self.show_as_bar:
             self._toggle_chart_type()
-        
+
+        # Apply average-only toggle
+        if settings.get('show_average_only', False) != self.show_average_only:
+            self.show_average_only = settings['show_average_only']
+            self.avg_action.setChecked(self.show_average_only)
+            self._plot_data()
+
         # Apply view range
         if 'x_range' in settings and 'y_range' in settings:
             self.plot_widget.setRange(xRange=settings['x_range'], yRange=settings['y_range'], padding=0)
+
+        # Apply window size
+        if 'window_width' in settings and 'window_height' in settings:
+            self.resize(settings['window_width'], settings['window_height'])
     
     def _export_as_png(self):
         """Export the current plot as PNG image."""
@@ -539,15 +580,23 @@ class GroupDetailWindow(QMainWindow):
         # Store original x values
         if self.original_x_values is None:
             self.original_x_values = self.x_values.copy()
-        
+
         # Convert color to RGBA (fully opaque for sample lines)
         color = pg.mkColor(self.base_color)
         r, g, b, _ = color.getRgb()
-        
+
         # Clear plot and state
         self.plot_widget.clear()
         self.plot_items = []
         self._clear_pinned_points()
+
+        # If showing average only, replace samples with single average
+        if self.show_average_only and len(self.samples) > 0:
+            all_values = np.array([s['values'] for s in self.samples])
+            mean_psd = np.mean(all_values, axis=0)
+            samples_to_plot = [{'name': 'Average', 'values': mean_psd.tolist()}]
+        else:
+            samples_to_plot = self.samples
         self.point_marker = None
         self.coord_label = None
         
@@ -560,7 +609,7 @@ class GroupDetailWindow(QMainWindow):
             # Filter out NaN values
             valid_mask = ~np.isnan(x_plot_values)
             
-            for si, sample in enumerate(self.samples):
+            for si, sample in enumerate(samples_to_plot):
                     y_values = np.array(sample['values'])
                     
                     # Ensure y_values and x_plot_values have the same length
@@ -616,27 +665,26 @@ class GroupDetailWindow(QMainWindow):
                         })
                     else:
                         # Line chart rendering with distinct color per sample
-                        line_color = pg.intColor(si, hues=max(10, len(self.samples)), alpha=255)
+                        line_color = pg.intColor(si, hues=max(10, len(samples_to_plot)), alpha=255)
                         pen = pg.mkPen(color=line_color, width=self.settings.line_thickness)
-                        plot_item = self.plot_widget.plot(x_plot_subset[valid_mask_subset], 
-                                                         y_values[valid_mask_subset], 
+                        plot_item = self.plot_widget.plot(x_plot_subset[valid_mask_subset],
+                                                         y_values[valid_mask_subset],
                                                          pen=pen)
-                        
-                        # Store plot item with sample name and original pen for click detection
+
                         hover_width = self.settings.line_thickness + 1.5
                         click_width = self.settings.line_thickness + 1.0
                         self.plot_items.append({
                             'plot_item': plot_item,
                             'sample_name': sample['name'],
                             'original_pen': pen,
-                            'hover_pen': pg.mkPen(color=line_color, width=hover_width),  # Thicker for hover
-                            'click_pen': pg.mkPen(color=(255, 165, 0, 255), width=click_width)  # Orange for click feedback
+                            'hover_pen': pg.mkPen(color=line_color, width=hover_width),
+                            'click_pen': pg.mkPen(color=(255, 165, 0, 255), width=click_width)
                         })
         else:
             # Linear scale - use actual grain-size x-values instead of indices
             x_plot_values = self.original_x_values.astype(float)
             
-            for si, sample in enumerate(self.samples):
+            for si, sample in enumerate(samples_to_plot):
                 y_values = np.array(sample['values'])
                 # Ensure lengths match
                 if len(y_values) != len(x_plot_values):
@@ -684,7 +732,7 @@ class GroupDetailWindow(QMainWindow):
                     })
                 else:
                     # Line chart rendering on actual x positions with per-sample color
-                    line_color = pg.intColor(si, hues=max(10, len(self.samples)), alpha=255)
+                    line_color = pg.intColor(si, hues=max(10, len(samples_to_plot)), alpha=255)
                     pen = pg.mkPen(color=line_color, width=self.settings.line_thickness)
                     plot_item = self.plot_widget.plot(x_plot_subset, y_values, pen=pen)
                     
@@ -725,60 +773,51 @@ class GroupDetailWindow(QMainWindow):
         """Adaptive x-axis tick labeling depending on zoom level and scale type."""
         ax = self.plot_widget.getAxis('bottom')
         vb = self.plot_widget.getViewBox()
-        
+
         if self.is_log_scale:
-            # For log scale, create custom tick labels
-            ticks = []
-            
-            # Generate log-spaced tick positions
+            major = []
+            minor = []
+
             if self.original_x_values is not None and len(self.original_x_values) > 0:
                 min_val = np.min(self.original_x_values[self.original_x_values > 0])
                 max_val = np.max(self.original_x_values)
-                
-                # Create tick positions at powers of 10 and intermediate values
+
                 log_min = np.floor(np.log10(min_val))
                 log_max = np.ceil(np.log10(max_val))
-                
-                # Major ticks at powers of 10
+
                 for exp in range(int(log_min), int(log_max) + 1):
                     val = 10 ** exp
                     if min_val <= val <= max_val:
                         log_pos = np.log10(val)
-                        # Format label based on value magnitude
                         if val >= 1:
                             label = f"{int(val)}" if val == int(val) else f"{val:.1f}"
                         else:
                             label = f"{val:.2f}" if val >= 0.1 else f"{val:.3f}"
-                        ticks.append((log_pos, label))
-                
-                # Add intermediate ticks for better resolution
-                if log_max - log_min <= 2:
-                    for exp in range(int(log_min), int(log_max) + 1):
-                        for mult in [2, 5]:
-                            val = mult * (10 ** exp)
-                            if min_val <= val <= max_val:
-                                log_pos = np.log10(val)
-                                label = f"{val:.1f}" if val >= 1 else f"{val:.2f}"
-                                ticks.append((log_pos, label))
-            
-            ax.setTicks([ticks])
+                        major.append((log_pos, label))
+
+                    # Minor ticks at 2,3,4,5,6,7,8,9 × 10^exp
+                    for mult in range(2, 10):
+                        mval = mult * (10 ** exp)
+                        if min_val <= mval <= max_val:
+                            minor.append((np.log10(mval), ''))
+
+            ax.setTicks([major, minor])
         else:
-            # Linear scale - use nice numeric ticks instead of raw sample positions
             if self.original_x_values is not None and len(self.original_x_values) > 0:
                 data_min = float(np.min(self.original_x_values))
                 data_max = float(np.max(self.original_x_values))
                 if not np.isfinite(data_min) or not np.isfinite(data_max) or data_max <= data_min:
                     return
-                # Use current view range, clamped to data range
                 vr = vb.viewRange()[0]
                 min_val = max(data_min, float(vr[0]))
                 max_val = min(data_max, float(vr[1]))
                 if max_val <= min_val:
                     min_val, max_val = data_min, data_max
-                
-                ticks = self._nice_linear_ticks(min_val, max_val, desired=7)
-                ax.setTicks([ticks])
-        
+
+                major = self._nice_linear_ticks(min_val, max_val, desired=7)
+                minor = self._nice_linear_minor_ticks(major, min_val, max_val)
+                ax.setTicks([major, minor])
+
         ax.setTextPen('#333')
 
     def _nice_linear_ticks(self, vmin: float, vmax: float, desired: int = 7):
@@ -813,7 +852,28 @@ class GroupDetailWindow(QMainWindow):
             x += step
             it += 1
         return ticks
-    
+
+    @staticmethod
+    def _nice_linear_minor_ticks(major_ticks, vmin, vmax):
+        """Generate minor ticks between major ticks (subdivide each interval into 5)."""
+        if len(major_ticks) < 2:
+            return []
+        step = major_ticks[1][0] - major_ticks[0][0]
+        if step <= 0:
+            return []
+        minor_step = step / 5
+        minor = []
+        start = major_ticks[0][0] - step
+        end = major_ticks[-1][0] + step
+        x = start
+        while x <= end + 1e-9:
+            if vmin - 1e-9 <= x <= vmax + 1e-9:
+                is_major = any(abs(x - mt[0]) < minor_step * 0.1 for mt in major_ticks)
+                if not is_major:
+                    minor.append((x, ''))
+            x += minor_step
+        return minor
+
     def _compute_bar_widths(self, x_positions: np.ndarray) -> np.ndarray:
         """Compute bar widths based on neighbor gaps in plotted x-coordinates.
         Works for both linear (indices) and log-transformed x positions.

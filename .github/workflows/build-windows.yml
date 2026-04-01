@@ -3,8 +3,6 @@ name: Build Windows EXE
 on:
   workflow_dispatch:          # Manual trigger from GitHub UI
   push:
-    branches:
-      - 'user/dongkai'       # Auto-trigger on push to this branch
     tags:
       - 'v*'                 # Auto-trigger on version tags
 
