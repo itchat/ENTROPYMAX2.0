@@ -71,14 +71,14 @@ class CustomSortTreeWidgetItem(QTreeWidgetItem):
             # Return True if self is unchecked and other is checked
             return not self_checked and other_checked
         
-        if column == 2: # Number column
-            key1 = self.text(2)
-            key2 = other.text(2)
-            try: 
+        if column in (2, 3, 4, 5, 6):  # Group, Peak, Mean, Lat, Lon — numeric columns
+            key1 = self.text(column)
+            key2 = other.text(column)
+            try:
                 return float(key1) < float(key2)
             except ValueError:
                 return key1 < key2
-        
+
         # For other columns, use default comparison
         return super().__lt__(other)
 
