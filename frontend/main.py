@@ -1048,7 +1048,7 @@ class EntropyMaxFinal(QMainWindow):
         except Exception:
             actual_groups = []
         
-        group_options = ["All groups separate", "All groups"]
+        group_options = ["All groups separate"]
         if actual_groups:
             for gid in actual_groups:
                 display_gid = self.group_relabel_mapping.get(gid, gid) if self.group_relabel_mapping else gid
@@ -1056,6 +1056,7 @@ class EntropyMaxFinal(QMainWindow):
         else:
             for i in range(1, k_value + 1):
                 group_options.append(f"Group {i} only")
+        group_options.append("All individual data points")
         
         group_choice, ok = QInputDialog.getItem(
             self,
@@ -1093,10 +1094,10 @@ class EntropyMaxFinal(QMainWindow):
                     QMessageBox.critical(self, "KML Export Error", f"Failed to export KML for group {group_number};\n{str(e)}")
             self.statusBar().showMessage(f"KML exported: K = {k_value}, all groups separately")
             return
-        if group_choice == "All groups":
+        if group_choice == "All individual data points":
             group_number = 0
             filename_suffix = f"k{k_value}_all"
-            export_description = "All groups"
+            export_description = "All individual data points"
         else:
             group_number = int(group_choice.split()[1])  # Extract number from "Group X only"
             filename_suffix = f"k{k_value}_group{group_number}"

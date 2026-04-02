@@ -237,6 +237,7 @@ class GroupDetailWindow(QMainWindow):
         self.is_log_scale = True  # default to logarithmic x
         self.show_as_bar = True  # default to bar chart per request
         self.show_average_only = False  # show only average curve
+        self.hide_x_axis = False  # hide bottom axis for compact stacking
         self.original_x_values = None  # original grain sizes
 
         # Hover/pin overlays
@@ -280,18 +281,24 @@ class GroupDetailWindow(QMainWindow):
         # Create plot widget directly without header
         self.plot_widget = pg.PlotWidget()
         self.plot_widget.setBackground('w')
-        # Plot header inside the chart area as well
-        self.plot_widget.setTitle(f"Group {self.group_id} of {self.total_groups}")
         
         # Apply initial styling from settings
         self._apply_plot_styling()
         
         # Show grid
         self.plot_widget.showGrid(x=True, y=True, alpha=0.2)
-        
+
+        # Group label at top-left (won't overlap data)
+        self.group_label_item = pg.TextItem(
+            f"Group {self.group_id} of {self.total_groups}",
+            color=(80, 80, 80), anchor=(0, 0)
+        )
+        self.group_label_item.setFont(pg.QtGui.QFont('Arial', 11, pg.QtGui.QFont.Weight.Bold))
+        self.plot_widget.addItem(self.group_label_item, ignoreBounds=True)
+
         layout.addWidget(self.plot_widget)
-        
-        # Connect range change for adaptive x-axis ticks
+
+        # Connect range change for adaptive x-axis ticks + label position
         self.plot_widget.getViewBox().sigRangeChanged.connect(self._on_range_changed)
     
     def _apply_plot_styling(self):
@@ -363,6 +370,14 @@ class GroupDetailWindow(QMainWindow):
         self.avg_action.triggered.connect(self._toggle_average_only)
         toolbar.addAction(self.avg_action)
 
+        # Hide X-Axis toggle
+        self.hide_x_action = QAction("Hide X-Axis", self)
+        self.hide_x_action.setCheckable(True)
+        self.hide_x_action.setChecked(False)
+        self.hide_x_action.setToolTip("Hide X-axis label and ticks for compact stacking")
+        self.hide_x_action.triggered.connect(self._toggle_hide_x_axis)
+        toolbar.addAction(self.hide_x_action)
+
         # Separator
         toolbar.addSeparator()
 
@@ -416,14 +431,17 @@ class GroupDetailWindow(QMainWindow):
         self.settings_dialog.raise_()
         self.settings_dialog.activateWindow()
     
+    def _toggle_hide_x_axis(self, checked):
+        """Toggle visibility of the bottom axis (label + ticks)."""
+        self.hide_x_axis = checked
+        self.plot_widget.getAxis('bottom').setVisible(not checked)
+
     def _toggle_average_only(self, checked):
-        """Toggle showing only the group average curve."""
+        """Toggle showing only the group average curve. Preserves X-axis range."""
+        x_range = self.plot_widget.viewRange()[0]
         self.show_average_only = checked
         self._plot_data()
-        self.plot_widget.autoRange()
-        if not self.is_log_scale and self.original_x_values is not None:
-            x_max = float(np.max(self.original_x_values))
-            self.plot_widget.setXRange(0, x_max * 1.05, padding=0)
+        self.plot_widget.setXRange(*x_range, padding=0)
 
     def _toggle_scale(self):
         """Toggle between logarithmic and linear scale for X-axis."""
@@ -441,19 +459,18 @@ class GroupDetailWindow(QMainWindow):
         if not self.is_log_scale and self.original_x_values is not None:
             x_max = float(np.max(self.original_x_values))
             self.plot_widget.setXRange(0, x_max * 1.05, padding=0)
-    
+
     def _toggle_chart_type(self):
-        """Toggle between bar and line chart types."""
+        """Toggle between bar and line chart types. Preserves X-axis range."""
+        x_range = self.plot_widget.viewRange()[0]
         self.show_as_bar = not self.show_as_bar
-        # Update action text
         if self.show_as_bar:
             self.chart_type_action.setText("Switch to Line")
         else:
             self.chart_type_action.setText("Switch to Bar")
-        # Replot and autorange
         self._plot_data()
-        self.plot_widget.autoRange()
-        
+        self.plot_widget.setXRange(*x_range, padding=0)
+
     def _reset_all_defaults(self):
         """Reset styles and all group detail windows to defaults."""
         # Reset shared visualization styles
@@ -465,11 +482,14 @@ class GroupDetailWindow(QMainWindow):
         self.is_log_scale = True
         self.show_as_bar = True
         self.show_average_only = False
+        self.hide_x_axis = False
         # Update toolbar texts
         try:
             self.scale_action.setText("Switch to Linear")
             self.chart_type_action.setText("Switch to Line")
             self.avg_action.setChecked(False)
+            self.hide_x_action.setChecked(False)
+            self.plot_widget.getAxis('bottom').setVisible(True)
         except Exception:
             pass
         # Replot and reset view
@@ -520,6 +540,7 @@ class GroupDetailWindow(QMainWindow):
             'is_log_scale': self.is_log_scale,
             'show_as_bar': self.show_as_bar,
             'show_average_only': self.show_average_only,
+            'hide_x_axis': self.hide_x_axis,
             'x_range': view_range[0],
             'y_range': view_range[1],
             'window_width': geom.width(),
@@ -541,6 +562,12 @@ class GroupDetailWindow(QMainWindow):
             self.show_average_only = settings['show_average_only']
             self.avg_action.setChecked(self.show_average_only)
             self._plot_data()
+
+        # Apply hide x-axis toggle
+        if settings.get('hide_x_axis', False) != self.hide_x_axis:
+            self.hide_x_axis = settings['hide_x_axis']
+            self.hide_x_action.setChecked(self.hide_x_axis)
+            self.plot_widget.getAxis('bottom').setVisible(not self.hide_x_axis)
 
         # Apply view range
         if 'x_range' in settings and 'y_range' in settings:
@@ -589,6 +616,14 @@ class GroupDetailWindow(QMainWindow):
         self.plot_widget.clear()
         self.plot_items = []
         self._clear_pinned_points()
+
+        # Re-add group label (clear() removes all items)
+        self.group_label_item = pg.TextItem(
+            f"Group {self.group_id} of {self.total_groups}",
+            color=(80, 80, 80), anchor=(0, 0)
+        )
+        self.group_label_item.setFont(pg.QtGui.QFont('Arial', 11, pg.QtGui.QFont.Weight.Bold))
+        self.plot_widget.addItem(self.group_label_item, ignoreBounds=True)
 
         # If showing average only, replace samples with single average
         if self.show_average_only and len(self.samples) > 0:
@@ -748,7 +783,12 @@ class GroupDetailWindow(QMainWindow):
         
         # Update x-axis ticks after plotting
         self._update_x_ticks()
-        
+
+        # Position group label at top-left of current view
+        if hasattr(self, 'group_label_item'):
+            vr = self.plot_widget.viewRange()
+            self.group_label_item.setPos(vr[0][0], vr[1][1])
+
         # Connect click and hover events (avoid duplicates)
         scene = self.plot_widget.scene()
         try:
@@ -766,8 +806,12 @@ class GroupDetailWindow(QMainWindow):
         
 
     def _on_range_changed(self, *args):
-        """Update x-axis ticks adaptively when view range changes."""
+        """Update x-axis ticks and group label position when view range changes."""
         self._update_x_ticks()
+        # Reposition group label to top-left of visible area
+        if hasattr(self, 'group_label_item'):
+            vr = self.plot_widget.viewRange()
+            self.group_label_item.setPos(vr[0][0], vr[1][1])
         
     def _update_x_ticks(self):
         """Adaptive x-axis tick labeling depending on zoom level and scale type."""
