@@ -26,13 +26,32 @@ def _compute_group_mean_grain_size(samples, x_labels):
 
 
 def _compute_group_peak_bin(samples, x_labels):
-    """Compute the grain size of the peak (highest frequency) bin for a group."""
+    """Compute modal grain size for a group via cubic Hermite interpolation in log-space."""
     try:
-        grain_sizes = np.array([float(l.replace('μm', '').replace('um', '').strip()) for l in x_labels])
+        gs = np.array([float(l.replace('μm', '').replace('um', '').strip()) for l in x_labels])
         all_values = np.array([s['values'] for s in samples])
         mean_psd = np.mean(all_values, axis=0)
-        peak_idx = int(np.argmax(mean_psd))
-        return float(grain_sizes[peak_idx])
+        gs_pos = gs[gs > 0]
+        vals = mean_psd[:len(gs_pos)]
+        n = len(gs_pos)
+        if n < 3:
+            return float(gs_pos[np.argmax(vals)]) if n > 0 else 0.0
+        log_gs = np.log10(gs_pos)
+        slopes = np.empty(n)
+        slopes[0] = (vals[1] - vals[0]) / (log_gs[1] - log_gs[0])
+        slopes[-1] = (vals[-1] - vals[-2]) / (log_gs[-1] - log_gs[-2])
+        slopes[1:-1] = ((vals[2:] - vals[1:-1]) / (log_gs[2:] - log_gs[1:-1]) +
+                        (vals[1:-1] - vals[:-2]) / (log_gs[1:-1] - log_gs[:-2])) / 2
+        fine_x = np.linspace(log_gs[0], log_gs[-1], 5000)
+        idx = np.clip(np.searchsorted(log_gs, fine_x, side='right') - 1, 0, n - 2)
+        x0, x1 = log_gs[idx], log_gs[idx + 1]
+        y0, y1 = vals[idx], vals[idx + 1]
+        m0, m1 = slopes[idx], slopes[idx + 1]
+        h = x1 - x0; h[h == 0] = 1
+        t = (fine_x - x0) / h; t2 = t * t; t3 = t2 * t
+        fine_y = np.maximum((2*t3 - 3*t2 + 1)*y0 + (t3 - 2*t2 + t)*h*m0 +
+                            (-2*t3 + 3*t2)*y1 + (t3 - t2)*h*m1, 0)
+        return float(10 ** fine_x[np.argmax(fine_y)])
     except Exception:
         pass
     return 0.0

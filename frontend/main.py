@@ -16,6 +16,35 @@ from components.selected_psd_widget import SelectedPSDWidget
 from help import FormatExamplesDialog, ValidationRulesDialog, UsageGuideDialog
 from utils.create_kml import create_kml
 from utils.recent_files import save_recent_files, load_recent_files
+
+
+def _interpolated_peak(grain_sizes, values):
+    """Find modal grain size via cubic Hermite interpolation in log-space."""
+    gs = grain_sizes[grain_sizes > 0]
+    vals = np.asarray(values[:len(gs)], dtype=float)
+    n = len(gs)
+    if n < 3:
+        return float(gs[np.argmax(vals)]) if n > 0 else 0.0
+    log_gs = np.log10(gs)
+    # Slopes via central differences
+    slopes = np.empty(n)
+    slopes[0] = (vals[1] - vals[0]) / (log_gs[1] - log_gs[0])
+    slopes[-1] = (vals[-1] - vals[-2]) / (log_gs[-1] - log_gs[-2])
+    slopes[1:-1] = ((vals[2:] - vals[1:-1]) / (log_gs[2:] - log_gs[1:-1]) +
+                    (vals[1:-1] - vals[:-2]) / (log_gs[1:-1] - log_gs[:-2])) / 2
+    # Fine grid + vectorized Hermite
+    fine_x = np.linspace(log_gs[0], log_gs[-1], 5000)
+    idx = np.clip(np.searchsorted(log_gs, fine_x, side='right') - 1, 0, n - 2)
+    x0, x1 = log_gs[idx], log_gs[idx + 1]
+    y0, y1 = vals[idx], vals[idx + 1]
+    m0, m1 = slopes[idx], slopes[idx + 1]
+    h = x1 - x0; h[h == 0] = 1
+    t = (fine_x - x0) / h; t2 = t * t; t3 = t2 * t
+    fine_y = np.maximum((2*t3 - 3*t2 + 1)*y0 + (t3 - 2*t2 + t)*h*m0 +
+                        (-2*t3 + 3*t2)*y1 + (t3 - t2)*h*m1, 0)
+    return float(10 ** fine_x[np.argmax(fine_y)])
+
+
 class BentoBox(QFrame):
     """A styled frame to create the bento box effect."""
     def __init__(self, parent=None, title=""):
@@ -540,7 +569,7 @@ class EntropyMaxFinal(QMainWindow):
                             gs = np.array([float(l.replace('μm', '').replace('um', '').strip()) for l in x_labels])
                             total = np.sum(vals)
                             sample_stats[s['name']] = {
-                                'peak': float(gs[int(np.argmax(vals))]) if len(vals) > 0 else 0,
+                                'peak': _interpolated_peak(gs, vals),
                                 'mean': float(np.sum(gs * vals) / total) if total > 0 else 0,
                             }
         except Exception:
