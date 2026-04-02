@@ -122,7 +122,7 @@ class SampleListWidget(QWidget):
         
         # Create tree widget for sample list
         self.tree_widget = QTreeWidget()
-        self.tree_widget.setHeaderLabels(['✓', 'Sample Name', 'Group', 'Lat', 'Lon'])
+        self.tree_widget.setHeaderLabels(['✓', 'Sample Name', 'Group', 'Peak (μm)', 'Mean (μm)', 'Lat', 'Lon'])
         
         # Set column widths
         self.tree_widget.setColumnWidth(0, 40)  # Checkbox column
@@ -198,18 +198,24 @@ class SampleListWidget(QWidget):
             # Group
             group = sample.get('group', 0)
             item.setText(2, str(group))
-            
+
+            # Peak and Mean grain size
+            peak = sample.get('peak_grain_size')
+            mean = sample.get('mean_grain_size')
+            item.setText(3, f"{peak:.1f}" if peak is not None else '')
+            item.setText(4, f"{mean:.1f}" if mean is not None else '')
+
             # Coordinates
-            item.setText(3, f"{sample.get('lat', 0):.4f}")
-            item.setText(4, f"{sample.get('lon', 0):.4f}")
-            
+            item.setText(5, f"{sample.get('lat', 0):.4f}")
+            item.setText(6, f"{sample.get('lon', 0):.4f}")
+
             # Store full sample data in item
             item.setData(1, Qt.ItemDataRole.UserRole, sample)
-            
+
             self.tree_widget.addTopLevelItem(item)
-        
+
         # Resize columns to content
-        for i in range(5):
+        for i in range(7):
             self.tree_widget.resizeColumnToContents(i)
             
     def _on_item_clicked(self, item, column):

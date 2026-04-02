@@ -1,5 +1,6 @@
 import sys
 import os
+import numpy as np
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QHBoxLayout, QFrame, QMessageBox, QMenu, QFileDialog, QLabel)
 from PyQt6.QtCore import Qt
@@ -520,18 +521,45 @@ class EntropyMaxFinal(QMainWindow):
         
         # Save current selection
         current_selection = list(self.selected_samples) if hasattr(self, 'selected_samples') else []
-        
+
+        # Load per-sample PSD data for peak/mean computation
+        sample_stats = {}
+        try:
+            from utils.data_pipeline import DataPipeline
+            parquet_path = self.current_analysis_data.get('parquet_path', '')
+            if parquet_path:
+                pipeline = DataPipeline()
+                group_details = pipeline.extract_group_details(parquet_path, int(k_value))
+                if group_details:
+                    x_labels = None
+                    for gid, details in group_details.items():
+                        if x_labels is None:
+                            x_labels = details.get('x_labels', [])
+                        for s in details.get('samples', []):
+                            vals = np.array(s['values'])
+                            gs = np.array([float(l.replace('μm', '').replace('um', '').strip()) for l in x_labels])
+                            total = np.sum(vals)
+                            sample_stats[s['name']] = {
+                                'peak': float(gs[int(np.argmax(vals))]) if len(vals) > 0 else 0,
+                                'mean': float(np.sum(gs * vals) / total) if total > 0 else 0,
+                            }
+        except Exception:
+            pass
+
         # Convert to markers format, applying relabel mapping if active
         markers = []
         for sample_id, info in gps_data.items():
             group = info['group']
             if self.group_relabel_mapping:
                 group = self.group_relabel_mapping.get(group, group)
+            stats = sample_stats.get(sample_id, {})
             markers.append({
                 'name': sample_id,
                 'lat': info['lat'],
                 'lon': info['lon'],
                 'group': group,
+                'peak_grain_size': stats.get('peak'),
+                'mean_grain_size': stats.get('mean'),
                 'selected': sample_id in current_selection
             })
 
