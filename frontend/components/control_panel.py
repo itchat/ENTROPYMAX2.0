@@ -4,13 +4,14 @@ Workflow-oriented control panel.
 
 from PyQt6.QtWidgets import (QWidget, QGroupBox, QVBoxLayout, QHBoxLayout,
                              QPushButton, QCheckBox, QLineEdit,
-                             QLabel, QFileDialog)
+                             QLabel, QFileDialog, QToolButton, QMenu)
+from PyQt6.QtGui import QAction
 from PyQt6.QtCore import pyqtSignal as Signal
 
 
 class ControlPanel(QWidget):
     """Minimalist control panel following workflow steps."""
-    
+
     # Signals
     inputFileSelected = Signal(str)
     gpsFileSelected = Signal(str)
@@ -72,9 +73,10 @@ class ControlPanel(QWidget):
             }
         """)
         self.select_input_btn.clicked.connect(self._on_select_input)
+        self.recent_input_btn = self._make_recent_button("Recent PSD")
         self.input_label = QLabel("No file selected")
         self.input_label.setStyleSheet("color: gray; padding: 5px;")
-        
+
         # Add GPS file selection button
         self.select_gps_btn = QPushButton("Select GPS CSV")
         self.select_gps_btn.setStyleSheet("""
@@ -95,13 +97,25 @@ class ControlPanel(QWidget):
             }
         """)
         self.select_gps_btn.clicked.connect(self._on_select_gps)
+        self.recent_gps_btn = self._make_recent_button("Recent GPS")
         self.gps_label = QLabel("No GPS file selected")
         self.gps_label.setStyleSheet("color: gray; padding: 5px;")
-        
-        input_layout.addWidget(self.select_input_btn)
+
+        # Horizontal rows: [Select button | Recent dropdown]
+        psd_row = QHBoxLayout()
+        psd_row.addWidget(self.select_input_btn, 1)
+        psd_row.addWidget(self.recent_input_btn)
+        gps_row = QHBoxLayout()
+        gps_row.addWidget(self.select_gps_btn, 1)
+        gps_row.addWidget(self.recent_gps_btn)
+
+        input_layout.addLayout(psd_row)
         input_layout.addWidget(self.input_label)
-        input_layout.addWidget(self.select_gps_btn)
+        input_layout.addLayout(gps_row)
         input_layout.addWidget(self.gps_label)
+        # Initialize empty placeholder menus
+        self.setRecentInputs([])
+        self.setRecentGps([])
         input_group.setLayout(input_layout)
         layout.addWidget(input_group)
         
@@ -338,6 +352,101 @@ class ControlPanel(QWidget):
         
         layout.addStretch()
         
+    def _make_recent_button(self, label: str) -> QToolButton:
+        """Create a styled QToolButton with menu popup mode for recent files."""
+        btn = QToolButton(self)
+        btn.setText(" ▾ ")
+        btn.setToolTip(label)
+        btn.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        btn.setStyleSheet("""
+            QToolButton {
+                background-color: #009688;
+                color: white;
+                border: none;
+                border-radius: 4px;
+                padding: 8px 6px;
+                font-size: 13px;
+                font-weight: 500;
+                min-width: 28px;
+            }
+            QToolButton:hover {
+                background-color: #00796b;
+            }
+            QToolButton::menu-indicator { image: none; }
+        """)
+        menu = QMenu(btn)
+        btn.setMenu(menu)
+        return btn
+
+    def _populate_recent_menu(self, btn: QToolButton, entries: list, on_trigger):
+        """Populate a recent-files menu, replacing existing actions."""
+        menu = btn.menu()
+        menu.clear()
+        if not entries:
+            placeholder = QAction("(no recent files)", self)
+            placeholder.setEnabled(False)
+            menu.addAction(placeholder)
+            return
+        for entry in entries:
+            name = entry.get("name") or entry.get("path", "?")
+            path = entry.get("path", "")
+            action = QAction(name, self)
+            action.setToolTip(path)
+            action.setData(path)
+            action.triggered.connect(lambda checked=False, p=path: on_trigger(p))
+            menu.addAction(action)
+
+    def setRecentInputs(self, entries: list) -> None:
+        """Repopulate the recent PSD dropdown menu."""
+        self._populate_recent_menu(
+            self.recent_input_btn, entries or [], self._on_recent_input_selected
+        )
+
+    def setRecentGps(self, entries: list) -> None:
+        """Repopulate the recent GPS dropdown menu."""
+        self._populate_recent_menu(
+            self.recent_gps_btn, entries or [], self._on_recent_gps_selected
+        )
+
+    def _on_recent_input_selected(self, path: str) -> None:
+        """Handler when a recent PSD entry is clicked."""
+        if not path:
+            return
+        self.input_file = path
+        self.input_label.setText(f"✓ {path.split('/')[-1]}")
+        self.input_label.setStyleSheet("color: green; padding: 5px;")
+        self.inputFileSelected.emit(path)
+        self._update_button_states()
+
+    def _on_recent_gps_selected(self, path: str) -> None:
+        """Handler when a recent GPS entry is clicked."""
+        if not path:
+            return
+        self.gps_file = path
+        self.gps_label.setText(f"✓ {path.split('/')[-1]}")
+        self.gps_label.setStyleSheet("color: green; padding: 5px;")
+        self.gpsFileSelected.emit(path)
+        self._update_button_states()
+
+    def populate_parameters(self, params: dict) -> None:
+        """Set parameter widgets from a dict (reverse of get_analysis_parameters)."""
+        if not isinstance(params, dict):
+            return
+        if "min_groups" in params:
+            try:
+                self.min_groups_input.setText(str(int(params["min_groups"])))
+            except (ValueError, TypeError):
+                pass
+        if "max_groups" in params:
+            try:
+                self.max_groups_input.setText(str(int(params["max_groups"])))
+            except (ValueError, TypeError):
+                pass
+        if "do_permutations" in params:
+            self.perm_check.setChecked(bool(params["do_permutations"]))
+        if "take_proportions" in params:
+            self.prop_check.setChecked(bool(params["take_proportions"]))
+
     def _on_select_input(self):
         """Handle input file selection."""
         file_path, _ = QFileDialog.getOpenFileName(

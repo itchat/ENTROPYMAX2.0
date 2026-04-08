@@ -15,7 +15,17 @@ from components.settings_dialog import SettingsDialog
 from components.selected_psd_widget import SelectedPSDWidget
 from help import FormatExamplesDialog, ValidationRulesDialog, UsageGuideDialog
 from utils.create_kml import create_kml
-from utils.recent_files import save_recent_files, load_recent_files
+from utils.recent_files import (
+    add_recent_input,
+    add_recent_gps,
+    list_recent_inputs,
+    list_recent_gps,
+)
+from utils.session import (
+    save_session,
+    load_session,
+    is_session_restorable,
+)
 
 
 def _interpolated_peak(grain_sizes, values):
@@ -107,7 +117,16 @@ class EntropyMaxFinal(QMainWindow):
         self._init_standalone_windows()
         self._connect_signals()
         self._reset_workflow()
-        
+        # Populate recent file dropdowns from disk
+        try:
+            self.control_panel.setRecentInputs(list_recent_inputs())
+            self.control_panel.setRecentGps(list_recent_gps())
+        except Exception:
+            pass
+        # Schedule restore prompt after window shows
+        from PyQt6.QtCore import QTimer
+        QTimer.singleShot(0, self._maybe_restore_session)
+
     def _setup_ui(self):
         """Initialize UI with preview cards."""
         central_widget = QWidget()
@@ -168,9 +187,6 @@ class EntropyMaxFinal(QMainWindow):
         )
         self.selected_psd_preview_card.openRequested.connect(self._open_selected_psd_window)
         right_layout.addWidget(self.selected_psd_preview_card)
-        
-        # Previously opened files banner moved to bottom
-        self._add_recent_files_banner(right_layout)
         
         right_layout.addStretch()
         main_layout.addWidget(right_container)
@@ -321,7 +337,7 @@ class EntropyMaxFinal(QMainWindow):
                 background-color: #e0f2f1;
             }
         """)
-        save_exit_action = session_menu.addAction('Save & Exit')
+        save_exit_action = session_menu.addAction('Save Session && Exit')
         save_exit_action.triggered.connect(self._on_save_and_exit)
 
         # Tools menu
@@ -394,76 +410,228 @@ class EntropyMaxFinal(QMainWindow):
         dialog = UsageGuideDialog(self)
         dialog.exec()
         
-    def _on_save_and_exit(self):
-        """Save names of opened data files and exit the application."""
+    def _capture_session_state(self) -> dict:
+        """Collect the current working state into a JSON-serializable dict."""
         try:
-            # Persist the current file selections (names and paths)
-            save_recent_files(self.input_file_path, self.gps_file_path)
-            self.statusBar().showMessage("Session saved. Exiting...", 2000)
+            params = self.control_panel.get_analysis_parameters()
+            # Strip non-serializable file paths from params (already at top level)
+            params = {k: v for k, v in params.items()
+                      if k in ("min_groups", "max_groups", "do_permutations", "take_proportions")}
+        except Exception:
+            params = {}
+        # Window states (best-effort, never raises)
+        try:
+            window_states = self._capture_window_states()
+        except Exception:
+            window_states = {}
+        try:
+            main_geom_hex = bytes(self.saveGeometry()).hex()
+        except Exception:
+            main_geom_hex = ""
+        # Group detail per-window full state
+        try:
+            group_details_state = self.group_detail_popup.capture_states()
+        except Exception:
+            group_details_state = {}
+        return {
+            "input_file_path": self.input_file_path,
+            "gps_file_path": self.gps_file_path,
+            "selected_k_for_details": self.selected_k_for_details,
+            "group_relabel_mapping": dict(self.group_relabel_mapping or {}),
+            "group_colors": dict(self.group_colors or {}),
+            "selected_samples": list(self.selected_samples or []),
+            "analysis_params": params,
+            "window_states": window_states,
+            "main_window_geometry": main_geom_hex,
+            "group_details_state": group_details_state,
+        }
+
+    def _on_save_and_exit(self):
+        """Save full session state and exit the application."""
+        try:
+            state = self._capture_session_state()
+            if state.get("input_file_path") and state.get("gps_file_path"):
+                save_session(state)
+                self.statusBar().showMessage("Session saved. Exiting...", 2000)
+            else:
+                self.statusBar().showMessage("No files to save. Exiting...", 2000)
         except Exception as e:
-            # Non-fatal: still proceed to exit
-            QMessageBox.warning(self, "Save & Exit", f"Failed to save recent files: {e}")
+            QMessageBox.warning(self, "Save Session & Exit",
+                                f"Failed to save session: {e}")
         finally:
             self.close()
 
-    def _add_recent_files_banner(self, container_layout):
-        """Render a small banner at the top showing previously opened files.
-        Only displays when previous data exists.
-        """
-        data = load_recent_files()
-        if not data:
+    def _maybe_restore_session(self) -> None:
+        """If a saved session exists and its files are still on disk, prompt to restore."""
+        state = load_session()
+        if not state:
             return
-        input_info = data.get('input') or {}
-        gps_info = data.get('gps') or {}
-        saved_at = data.get('saved_at', '')
+        ok, missing = is_session_restorable(state)
+        if not ok:
+            return  # silently skip — files moved/deleted
 
-        # Build banner using card-like style (match ModulePreviewCard)
-        banner = BentoBox(title="Previously Opened Files")
-        banner.setObjectName("recentBanner")
-        banner.setStyleSheet("""
-            QFrame#recentBanner {
-                background-color: #ffffff;
-                border: 1px solid #d0d0d0;
-                border-radius: 6px;
-                padding: 15px;
-            }
-        """)
-        v = QVBoxLayout(banner)
-        # Match ModulePreviewCard: frame padding 15px + layout margins ~9px
-        v.setContentsMargins(9, 9, 9, 9)
-        v.setSpacing(6)
+        in_name = os.path.basename(state.get('input_file_path', '') or '')
+        gps_name = os.path.basename(state.get('gps_file_path', '') or '')
+        k = state.get('selected_k_for_details')
+        k_text = f", K={k}" if k else ""
+        msg = QMessageBox(self)
+        msg.setIcon(QMessageBox.Icon.Question)
+        msg.setWindowTitle("Restore last session?")
+        msg.setText(f"Restore the previous session?\n\nFiles: {in_name}, {gps_name}{k_text}")
+        restore_btn = msg.addButton("Restore", QMessageBox.ButtonRole.AcceptRole)
+        fresh_btn = msg.addButton("Start Fresh", QMessageBox.ButtonRole.RejectRole)
+        msg.setDefaultButton(fresh_btn)
+        msg.exec()
+        if msg.clickedButton() is restore_btn:
+            self._restore_session(state)
 
-        title_label = QLabel("Previously Opened Data Files")
-        title_label.setStyleSheet("QLabel { font-size: 16px; font-weight: bold; color: #333; }")
-        v.addWidget(title_label)
+    def _restore_session(self, state: dict) -> None:
+        """Apply a saved session: load files, run analysis, restore K/relabel/colors/selection."""
+        try:
+            in_path = state.get('input_file_path')
+            gps_path = state.get('gps_file_path')
+            if in_path:
+                # Set control_panel.input_file directly (bypasses Select button click flow)
+                self.control_panel.input_file = in_path
+                self.control_panel.input_label.setText(f"✓ {os.path.basename(in_path)}")
+                self.control_panel.input_label.setStyleSheet("color: green; padding: 5px;")
+                self._on_input_file_selected(in_path)
+            if gps_path:
+                self.control_panel.gps_file = gps_path
+                self.control_panel.gps_label.setText(f"✓ {os.path.basename(gps_path)}")
+                self.control_panel.gps_label.setStyleSheet("color: green; padding: 5px;")
+                self._on_gps_file_selected(gps_path)
+            try:
+                self.control_panel._update_button_states()
+            except Exception:
+                pass
+            params = state.get('analysis_params') or {}
+            if params:
+                try:
+                    self.control_panel.populate_parameters(params)
+                except Exception:
+                    pass
+            run_params = self.control_panel.get_analysis_parameters()
+            self._on_run_analysis(run_params)
 
-        # Minimal format: only full paths; names removed
-        in_path = input_info.get('path') if input_info else None
-        gps_path = gps_info.get('path') if gps_info else None
+            # Apply post-analysis state — granular, NO auto-opening of windows
+            # K value: prefer saved K, fall back to optimal_k from analysis result
+            saved_k = state.get('selected_k_for_details')
+            if saved_k is None:
+                saved_k = (self.current_analysis_data or {}).get('optimal_k')
+            if saved_k is not None:
+                try:
+                    self.selected_k_for_details = int(saved_k)
+                except Exception:
+                    pass
 
-        lbl_in = QLabel(in_path or "(PSD: none)")
-        lbl_in.setStyleSheet("QLabel { color: #666; font-size: 12px; }")
-        lbl_in.setWordWrap(True)
-        lbl_in.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        lbl_in.setToolTip(in_path or "")
-        v.addWidget(lbl_in)
+            # Restore relabel mapping + colors BEFORE map data update
+            relabel = state.get('group_relabel_mapping') or {}
+            colors = state.get('group_colors') or {}
+            if relabel:
+                try:
+                    self.group_relabel_mapping = {int(k): int(v) for k, v in relabel.items()}
+                except Exception:
+                    self.group_relabel_mapping = dict(relabel)
+            if colors:
+                try:
+                    self.group_colors = {int(k): v for k, v in colors.items()}
+                except Exception:
+                    self.group_colors = dict(colors)
 
-        lbl_gps = QLabel(gps_path or "(GPS: none)")
-        lbl_gps.setStyleSheet("QLabel { color: #666; font-size: 12px; }")
-        lbl_gps.setWordWrap(True)
-        lbl_gps.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        lbl_gps.setToolTip(gps_path or "")
-        v.addWidget(lbl_gps)
+            # Update map data for the K value (does NOT open the standalone map window)
+            if saved_k is not None:
+                try:
+                    self._apply_map_for_k(int(saved_k), announce=False)
+                except Exception:
+                    pass
 
-        if saved_at:
-            # If stored in ISO, cut to seconds; otherwise show as-is
-            pretty_time = saved_at.split(".")[0].replace("T", " ")
-            lbl_time = QLabel(f"Saved at: {pretty_time}")
-            lbl_time.setStyleSheet("QLabel { color: #999; font-size: 11px; }")
-            v.addWidget(lbl_time)
+            # Restore selected samples (data-only, doesn't open windows)
+            samples = state.get('selected_samples') or []
+            if samples:
+                try:
+                    self.selected_samples = list(samples)
+                    self.map_sample_widget.sample_list.set_selection(list(samples))
+                except Exception:
+                    pass
 
-        container_layout.addWidget(banner)
-        
+            # Refresh Selected PSD widget data (doesn't open the standalone window)
+            try:
+                self._refresh_selected_psd()
+            except Exception:
+                pass
+
+            # Only open group detail popups if they were open at save time
+            gds = state.get('group_details_state') or {}
+            if gds:
+                try:
+                    self._on_show_group_details()
+                except Exception:
+                    pass
+                try:
+                    self.group_detail_popup.apply_states(gds)
+                except Exception:
+                    pass
+
+            # Restore window geometries last so they're applied after all show() calls
+            try:
+                self._restore_window_states(state.get('window_states') or {})
+                self._restore_main_window_geometry(state.get('main_window_geometry'))
+            except Exception:
+                pass
+        except Exception as e:
+            QMessageBox.warning(self, "Restore Session",
+                                f"Failed to restore session:\n{e}")
+
+    # ----- Window geometry helpers -----
+    def _capture_window_states(self) -> dict:
+        """Capture visibility + geometry for each standalone window."""
+        states = {}
+        for key in ("map_window", "ch_window", "rs_window", "selected_psd_window"):
+            win = getattr(self, key, None)
+            if win is None:
+                continue
+            try:
+                geom_bytes = bytes(win.saveGeometry())
+                states[key] = {
+                    "visible": bool(win.isVisible()),
+                    "geometry": geom_bytes.hex(),
+                }
+            except Exception:
+                pass
+        return states
+
+    def _restore_window_states(self, states: dict) -> None:
+        """Restore visibility + geometry for each standalone window."""
+        if not states:
+            return
+        for key, ws in states.items():
+            win = getattr(self, key, None)
+            if win is None:
+                continue
+            try:
+                geom_hex = ws.get("geometry") or ""
+                if geom_hex:
+                    try:
+                        from PyQt6.QtCore import QByteArray
+                        win.restoreGeometry(QByteArray(bytes.fromhex(geom_hex)))
+                    except (ValueError, ImportError):
+                        pass
+                if ws.get("visible"):
+                    win.show()
+            except Exception:
+                pass
+
+    def _restore_main_window_geometry(self, geom_hex) -> None:
+        """Restore main window geometry from a hex-encoded saveGeometry() blob."""
+        if not geom_hex:
+            return
+        try:
+            from PyQt6.QtCore import QByteArray
+            self.restoreGeometry(QByteArray(bytes.fromhex(geom_hex)))
+        except Exception:
+            pass
+
     def _connect_signals(self):
         """Connect all signals to their handlers."""
         self.control_panel.inputFileSelected.connect(self._on_input_file_selected)
@@ -496,29 +664,39 @@ class EntropyMaxFinal(QMainWindow):
         self.input_file_path = file_path
         # Validate raw data CSV format
         from utils.validate_csv_raw import validate_raw_data_csv
-        
+
         valid, error_msg = validate_raw_data_csv(file_path)
         if valid:
             self.statusBar().showMessage("Raw data file loaded successfully")
+            try:
+                add_recent_input(file_path)
+                self.control_panel.setRecentInputs(list_recent_inputs())
+            except Exception:
+                pass
         else:
-            QMessageBox.warning(self, "Invalid Raw Data File", 
+            QMessageBox.warning(self, "Invalid Raw Data File",
                               f"File validation failed:\n{error_msg}")
             self.input_file_path = None
             self.control_panel.input_file = None
             self.control_panel.input_label.setText("No file selected")
             self.control_panel.input_label.setStyleSheet("color: gray; padding: 5px;")
             self.control_panel._update_button_states()
-    
+
     def _on_gps_file_selected(self, file_path):
         self.gps_file_path = file_path
         # Validate GPS CSV format
         from utils.validate_csv_gps import validate_gps_csv
-        
+
         valid, error_msg = validate_gps_csv(file_path)
         if valid:
             self.statusBar().showMessage("GPS file loaded successfully.")
+            try:
+                add_recent_gps(file_path)
+                self.control_panel.setRecentGps(list_recent_gps())
+            except Exception:
+                pass
         else:
-            QMessageBox.warning(self, "Invalid GPS File", 
+            QMessageBox.warning(self, "Invalid GPS File",
                               f"File validation failed:\n{error_msg}")
             self.gps_file_path = None
             self.control_panel.gps_file = None
@@ -1249,18 +1427,36 @@ class EntropyMaxFinal(QMainWindow):
     def closeEvent(self, event):
         """Handle window close event and cleanup entire cache directory."""
         from utils.temp_manager import TempFileManager
-        
+
         # Close all group detail popups before closing the main window
-        self.group_detail_popup.close_all()
-        
+        try:
+            self.group_detail_popup.close_all()
+        except Exception:
+            pass
+
+        # Close all standalone windows so the Qt event loop can terminate
+        for key in ("map_window", "ch_window", "rs_window", "selected_psd_window"):
+            win = getattr(self, key, None)
+            if win is not None:
+                try:
+                    win.close()
+                except Exception:
+                    pass
+
         # Clean up cache directory contents on app exit
         try:
             TempFileManager.cleanup_entire_cache()
             print("Cache directory contents cleaned up on exit")
         except Exception as e:
             print(f"Warning: Failed to cleanup cache directory on exit: {e}")
-        
+
         super().closeEvent(event)
+        # Ensure the application actually quits even if some hidden top-level
+        # windows are still alive (e.g. settings dialog parented to None).
+        try:
+            QApplication.quit()
+        except Exception:
+            pass
 
 
     def _get_group_details_for_k(self, k_value):

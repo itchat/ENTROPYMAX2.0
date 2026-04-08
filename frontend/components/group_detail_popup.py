@@ -202,6 +202,40 @@ class GroupDetailPopup(QObject):
             window.close()
         self.detail_windows.clear()
 
+    def capture_states(self) -> dict:
+        """Return {group_id: full_state} for all currently-open detail windows."""
+        out = {}
+        for win in self.detail_windows:
+            try:
+                gid = int(win.group_id)
+                out[gid] = win.get_full_state()
+            except Exception:
+                pass
+        return out
+
+    def apply_states(self, states_by_gid: dict) -> None:
+        """Apply per-group full state to currently-open detail windows."""
+        if not states_by_gid:
+            return
+        # Coerce keys to int (JSON returns string keys)
+        normalized = {}
+        for k, v in states_by_gid.items():
+            try:
+                normalized[int(k)] = v
+            except (ValueError, TypeError):
+                pass
+        for win in self.detail_windows:
+            try:
+                gid = int(win.group_id)
+            except Exception:
+                continue
+            state = normalized.get(gid)
+            if state is not None:
+                try:
+                    win.apply_full_state(state)
+                except Exception:
+                    pass
+
     def highlight_sample(self, sample_name):
         """Highlight a sample across all group detail windows (from map hover)."""
         for window in self.detail_windows:
@@ -546,6 +580,74 @@ class GroupDetailWindow(QMainWindow):
             'window_width': geom.width(),
             'window_height': geom.height(),
         }
+
+    def get_full_state(self) -> dict:
+        """Return full JSON-safe state for session save/restore.
+
+        Includes layout settings, window geometry (hex of saveGeometry),
+        and pinned markers serialized without Qt objects.
+        """
+        view_range = self.plot_widget.viewRange()
+        try:
+            geom_hex = bytes(self.saveGeometry()).hex()
+        except Exception:
+            geom_hex = ""
+        # Serialize pinned markers, dropping Qt objects
+        pms = []
+        for m in self.pinned_markers:
+            pms.append({
+                "sample_name": m.get("sample_name"),
+                "x_plot": m.get("x_plot"),
+                "y_plot": m.get("y_plot"),
+            })
+        return {
+            "is_log_scale": self.is_log_scale,
+            "show_as_bar": self.show_as_bar,
+            "show_average_only": self.show_average_only,
+            "hide_x_axis": self.hide_x_axis,
+            "x_range": list(view_range[0]),
+            "y_range": list(view_range[1]),
+            "geometry": geom_hex,
+            "pinned_markers": pms,
+        }
+
+    def apply_full_state(self, state: dict) -> None:
+        """Restore the full state captured by get_full_state()."""
+        if not isinstance(state, dict):
+            return
+        # Reuse existing apply_layout_settings for the layout/view fields
+        self.apply_layout_settings(state)
+        # Restore window geometry from hex
+        geom_hex = state.get("geometry") or ""
+        if geom_hex:
+            try:
+                from PyQt6.QtCore import QByteArray
+                self.restoreGeometry(QByteArray(bytes.fromhex(geom_hex)))
+            except (ValueError, Exception):
+                pass
+        # Restore pinned markers (clear existing first)
+        try:
+            self._clear_pinned_points()
+        except Exception:
+            pass
+        for m in state.get("pinned_markers", []) or []:
+            sample_name = m.get("sample_name")
+            x_plot = m.get("x_plot")
+            y_plot = m.get("y_plot")
+            x_disp = m.get("x_disp")
+            y_disp = m.get("y_disp")
+            if sample_name is None or x_plot is None or y_plot is None:
+                continue
+            # Recompute display values if not saved (depends on current scale)
+            if x_disp is None:
+                x_disp = (10 ** x_plot) if self.is_log_scale else x_plot
+            if y_disp is None:
+                y_disp = y_plot
+            try:
+                self._pin_point(float(x_plot), float(y_plot),
+                                float(x_disp), float(y_disp), str(sample_name))
+            except Exception:
+                pass
 
     def apply_layout_settings(self, settings):
         """Apply layout settings from another window."""
