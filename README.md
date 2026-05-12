@@ -1,5 +1,15 @@
 # ENTROPYMAX 2.0
 
+> ### Project Origin and Maintenance
+>
+> This repository is a maintained continuation of **ENTROPYMAX 2.0**, originally developed as a **University of Western Australia CITS3200 capstone group project (Group 31)** for the **UWA Oceans Institute**.
+>
+> The original group implementation produced the working first release. This fork is maintained by [@itchat](https://github.com/itchat) post-graduation for continued development, bug fixes, performance improvements, and ongoing feature work.
+>
+> **Original group repository:** [github.com/CITS3200-group-31/ENTROPYMAX2.0](https://github.com/CITS3200-group-31/ENTROPYMAX2.0)
+
+---
+
 *A modernised version of the EntropyMax application for geological and geophysical analysis and data processing, with built‑in interactive visualisation that reduces or eliminates the need to move results into spreadsheets or other external software for plotting and mapping.*
 
 ---
